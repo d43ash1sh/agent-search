@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 
+from crawler.mcp import AgentSearchMCPServer
 from crawler.search import SearchService
 from crawler.spiders.site import SiteSpider
 from crawler.urls import host_is_allowed, normalize_url
@@ -133,13 +134,21 @@ def _search(args: argparse.Namespace) -> int:
     database = Path(args.database).expanduser()
     if not database.exists():
         raise SystemExit(f"Search index does not exist: {database}")
-    results, _ = SearchService(str(database)).search(
+    results, tokens = SearchService(str(database)).search(
         args.query,
         limit=args.limit,
+        max_tokens=args.tokens,
+        domains=args.domain,
         match=args.match,
+        mode=args.mode,
     )
-    for result in results:
-        print(f"{result.title or '(untitled)'}\n{result.canonical_url}\n{result.text}\n")
+    print(f"Results: {len(results)} | Estimated Tokens: {tokens}/{args.tokens} | Mode: {args.mode}\n")
+    for idx, result in enumerate(results, start=1):
+        print(f"[{idx}] {result.title or '(untitled)'}")
+        print(f"    URL: {result.canonical_url}")
+        print(f"    Evidence ID: {result.evidence_id}")
+        print(f"    Score: {result.score:.4f} | Tokens: ~{result.estimated_tokens}")
+        print(f"    {result.text}\n")
     return 0
 
 
@@ -148,6 +157,21 @@ def _serve(args: argparse.Namespace) -> int:
 
     os.environ["CRAWLER_DATABASE"] = str(Path(args.database).expanduser())
     uvicorn.run("crawler.api:app", host=args.host, port=args.port, log_level="info")
+    return 0
+
+
+def _mcp(args: argparse.Namespace) -> int:
+    database = str(Path(args.database).expanduser())
+    server = AgentSearchMCPServer(database=database)
+    server.run_stdio()
+    return 0
+
+
+def _stats(args: argparse.Namespace) -> int:
+    database = str(Path(args.database).expanduser())
+    service = SearchService(database)
+    stats = service.get_stats()
+    print(json.dumps(stats, indent=2))
     return 0
 
 
@@ -223,6 +247,14 @@ def main() -> int:
     search.add_argument("query", help="FTS5 search query")
     search.add_argument("--database", default="data/crawler.sqlite3")
     search.add_argument("--limit", type=int, default=10)
+    search.add_argument("--tokens", type=int, default=1200, help="maximum estimated token budget")
+    search.add_argument(
+        "--mode",
+        choices=("compact", "balanced", "research"),
+        default="compact",
+        help="retrieval mode: compact (strict dedup), balanced, or research (diverse domains)",
+    )
+    search.add_argument("--domain", action="append", help="filter by domain (repeat for multiple)")
     search.add_argument("--match", choices=("all", "any"), default="all")
     search.set_defaults(handler=_search)
 
@@ -231,6 +263,14 @@ def main() -> int:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.set_defaults(handler=_serve)
+
+    mcp_parser = subparsers.add_parser("mcp", help="run the Agent Search MCP server over stdio")
+    mcp_parser.add_argument("--database", default="data/crawler.sqlite3")
+    mcp_parser.set_defaults(handler=_mcp)
+
+    stats_parser = subparsers.add_parser("stats", help="display search index statistics")
+    stats_parser.add_argument("--database", default="data/crawler.sqlite3")
+    stats_parser.set_defaults(handler=_stats)
 
     args = parser.parse_args()
     if args.command == "crawl":
@@ -250,8 +290,8 @@ def main() -> int:
             parser.error(
                 "Invalid numeric argument: concurrency/timeout must be positive, limits non-negative"
             )
-    if args.command == "search" and args.limit <= 0:
-        parser.error("--limit must be positive")
+    if args.command == "search" and (args.limit <= 0 or args.tokens <= 0):
+        parser.error("--limit and --tokens must be positive")
     if args.command == "serve" and not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     handler = args.handler
