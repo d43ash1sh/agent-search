@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -14,11 +15,42 @@ from crawler.spiders.site import SiteSpider
 from crawler.urls import host_is_allowed, normalize_url
 
 
+def _load_seeds(args: argparse.Namespace) -> list[str]:
+    raw_list: list[str] = list(args.seed or [])
+    if args.seeds_file:
+        file_path = Path(args.seeds_file).expanduser()
+        if not file_path.exists():
+            raise SystemExit(f"Seeds file not found: {file_path}")
+        content = file_path.read_text(encoding="utf-8").strip()
+        if content.startswith("["):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, list):
+                    raw_list.extend(str(item).strip() for item in parsed if item)
+            except Exception as error:
+                raise SystemExit(f"Failed to parse seeds JSON file: {error}") from error
+        else:
+            for line in content.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    raw_list.append(line)
+
+    if not raw_list:
+        raise SystemExit("At least one --seed or a --seeds-file must be provided.")
+
+    normalized_seeds = [normalize_url(url) for url in raw_list]
+    if any(url is None for url in normalized_seeds):
+        raise SystemExit("Every seed value must be a valid HTTP(S) URL without credentials.")
+    return [url for url in normalized_seeds if url is not None]
+
+
 def _crawl(args: argparse.Namespace) -> int:
     if args.repeat_every > 0:
         command = [sys.executable, "-m", "crawler", "crawl"]
-        for seed in args.seed:
+        for seed in args.seed or []:
             command.extend(("--seed", seed))
+        if args.seeds_file:
+            command.extend(("--seeds-file", args.seeds_file))
         for domain in args.allow_domain:
             command.extend(("--allow-domain", domain))
         command.extend(
@@ -31,20 +63,29 @@ def _crawl(args: argparse.Namespace) -> int:
                 str(args.retries),
                 "--delay",
                 str(args.delay),
+                "--concurrency",
+                str(args.concurrency),
+                "--concurrency-per-domain",
+                str(args.concurrency_per_domain),
                 "--max-pages",
                 str(args.max_pages),
+                "--max-pages-per-domain",
+                str(args.max_pages_per_domain),
+                "--max-depth",
+                str(args.max_depth),
             )
         )
+        if args.sitemaps:
+            command.append("--sitemaps")
+        if args.jobdir:
+            command.extend(("--jobdir", args.jobdir))
         while True:
             result = subprocess.run(command, check=False)
             if result.returncode:
                 return result.returncode
             time.sleep(args.repeat_every)
 
-    raw_seeds = [normalize_url(url) for url in args.seed]
-    if any(url is None for url in raw_seeds):
-        raise SystemExit("Every --seed value must be a valid HTTP(S) URL without credentials.")
-    seeds: list[str] = [url for url in raw_seeds if url is not None]
+    seeds = _load_seeds(args)
 
     domains = [domain.lower().strip(".") for domain in args.allow_domain]
     if not domains:
@@ -61,12 +102,25 @@ def _crawl(args: argparse.Namespace) -> int:
     settings.set("DOWNLOAD_TIMEOUT", args.timeout, priority="cmdline")
     settings.set("RETRY_TIMES", args.retries, priority="cmdline")
     settings.set("DOWNLOAD_DELAY", args.delay, priority="cmdline")
-    settings.set("CONCURRENT_REQUESTS_PER_DOMAIN", 1, priority="cmdline")
+    settings.set("CONCURRENT_REQUESTS", args.concurrency, priority="cmdline")
+    settings.set("CONCURRENT_REQUESTS_PER_DOMAIN", args.concurrency_per_domain, priority="cmdline")
+    if args.delay == 0:
+        settings.set("AUTOTHROTTLE_ENABLED", False, priority="cmdline")
     if args.max_pages:
         settings.set("CLOSESPIDER_PAGECOUNT", args.max_pages, priority="cmdline")
+    if args.max_depth:
+        settings.set("DEPTH_LIMIT", args.max_depth, priority="cmdline")
+    if args.jobdir:
+        settings.set("JOBDIR", str(Path(args.jobdir).expanduser()), priority="cmdline")
 
     process = CrawlerProcess(settings)
-    process.crawl(SiteSpider, start_urls=seeds, allow_domains=domains)
+    process.crawl(
+        SiteSpider,
+        start_urls=seeds,
+        allow_domains=domains,
+        max_pages_per_domain=args.max_pages_per_domain,
+        follow_sitemaps=args.sitemaps,
+    )
     process.start()
     return 0
 
@@ -101,8 +155,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Crawl allowed sites into a local SQLite FTS5 index.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    crawl = subparsers.add_parser("crawl", help="crawl from one or more seed URLs")
-    crawl.add_argument("--seed", action="append", required=True, help="seed URL; repeat for multiple seeds")
+    crawl = subparsers.add_parser("crawl", help="crawl from one or more seed URLs or seeds file")
+    crawl.add_argument("--seed", action="append", default=[], help="seed URL; repeat for multiple seeds")
+    crawl.add_argument(
+        "--seeds-file",
+        help="path to a text file with one URL per line or a JSON array of URLs",
+    )
     crawl.add_argument(
         "--allow-domain",
         action="append",
@@ -110,14 +168,48 @@ def main() -> int:
         help="allowed hostname (subdomains included); defaults to seed hostnames",
     )
     crawl.add_argument("--database", default="data/crawler.sqlite3")
-    crawl.add_argument("--timeout", type=float, default=15.0)
-    crawl.add_argument("--retries", type=int, default=2)
-    crawl.add_argument("--delay", type=float, default=1.0)
+    crawl.add_argument("--timeout", type=float, default=10.0)
+    crawl.add_argument("--retries", type=int, default=1)
+    crawl.add_argument("--delay", type=float, default=0.5)
+    crawl.add_argument(
+        "--concurrency",
+        type=int,
+        default=64,
+        help="maximum concurrent requests across all domains (default: 64)",
+    )
+    crawl.add_argument(
+        "--concurrency-per-domain",
+        type=int,
+        default=2,
+        help="maximum concurrent requests per domain (default: 2)",
+    )
     crawl.add_argument(
         "--max-pages",
         type=int,
         default=0,
-        help="stop after this many downloaded pages (0 means unlimited)",
+        help="stop after this many downloaded pages across all domains (0 means unlimited)",
+    )
+    crawl.add_argument(
+        "--max-pages-per-domain",
+        type=int,
+        default=0,
+        help="maximum pages to index from any single domain (0 means unlimited)",
+    )
+    crawl.add_argument(
+        "--max-depth",
+        type=int,
+        default=0,
+        help="maximum link recursion depth from seed URLs (0 means unlimited)",
+    )
+    crawl.add_argument(
+        "--sitemaps",
+        action="store_true",
+        default=False,
+        help="automatically discover and crawl sitemaps (/sitemap.xml)",
+    )
+    crawl.add_argument(
+        "--jobdir",
+        help="directory to persist crawl state on disk for pause/resume capability",
     )
     crawl.add_argument(
         "--repeat-every",
@@ -141,10 +233,23 @@ def main() -> int:
     serve.set_defaults(handler=_serve)
 
     args = parser.parse_args()
-    if args.command == "crawl" and (
-        args.timeout <= 0 or args.delay < 0 or args.retries < 0 or args.repeat_every < 0 or args.max_pages < 0
-    ):
-        parser.error("--timeout must be positive, --delay and --retries cannot be negative")
+    if args.command == "crawl":
+        if not args.seed and not args.seeds_file:
+            parser.error("At least one --seed or a --seeds-file must be provided.")
+        if (
+            args.timeout <= 0
+            or args.delay < 0
+            or args.retries < 0
+            or args.repeat_every < 0
+            or args.max_pages < 0
+            or args.max_pages_per_domain < 0
+            or args.max_depth < 0
+            or args.concurrency <= 0
+            or args.concurrency_per_domain <= 0
+        ):
+            parser.error(
+                "Invalid numeric argument: concurrency/timeout must be positive, limits non-negative"
+            )
     if args.command == "search" and args.limit <= 0:
         parser.error("--limit must be positive")
     if args.command == "serve" and not 1 <= args.port <= 65535:

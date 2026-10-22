@@ -1,8 +1,11 @@
+import collections
+import re
 from collections.abc import AsyncIterator, Iterator
-from urllib.parse import urljoin
+from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import scrapy
-from scrapy.http import HtmlResponse, Request, Response
+from scrapy.http import HtmlResponse, Request, Response, TextResponse
 from scrapy.linkextractors import LinkExtractor
 
 from crawler.items import DocumentItem
@@ -16,7 +19,9 @@ class SiteSpider(scrapy.Spider):
         self,
         start_urls: list[str] | None = None,
         allow_domains: list[str] | None = None,
-        **kwargs: str,
+        max_pages_per_domain: int = 0,
+        follow_sitemaps: bool = False,
+        **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.allowed_domains = [domain.lower().lstrip(".") for domain in (allow_domains or [])]
@@ -25,6 +30,9 @@ class SiteSpider(scrapy.Spider):
             for url in (start_urls or [])
             if (normalized := normalize_url(url)) and host_is_allowed(normalized, self.allowed_domains)
         ]
+        self.max_pages_per_domain = max_pages_per_domain
+        self.follow_sitemaps = follow_sitemaps
+        self.domain_counts: dict[str, int] = collections.defaultdict(int)
         self.link_extractor = LinkExtractor(
             deny_extensions=[
                 "7z",
@@ -57,7 +65,53 @@ class SiteSpider(scrapy.Spider):
 
     async def start(self) -> AsyncIterator[Request]:
         for url in self.start_urls:
-            yield scrapy.Request(url, callback=self.parse)
+            yield scrapy.Request(url, callback=self.parse, errback=self.on_request_error)
+            if self.follow_sitemaps:
+                sitemap_url = urljoin(url, "/sitemap.xml")
+                yield scrapy.Request(
+                    sitemap_url,
+                    callback=self.parse_sitemap,
+                    errback=self.ignore_errback,
+                    priority=10,
+                )
+
+    def parse_sitemap(self, response: Response) -> Iterator[Request]:
+        """Extract URLs from XML sitemaps and sitemap index files."""
+        if not isinstance(response, TextResponse | HtmlResponse):
+            return
+
+        urls: list[str] = []
+        try:
+            urls = response.xpath("//*[local-name()='loc']/text()").getall()
+        except Exception:
+            urls = re.findall(r"<loc>\s*(https?://[^<]+)\s*</loc>", response.text, re.IGNORECASE)
+
+        for raw_url in urls:
+            target = normalize_url(raw_url.strip())
+            if not target or not host_is_allowed(target, self.allowed_domains):
+                continue
+
+            target_domain = (urlsplit(target).hostname or "").lower()
+            if (
+                self.max_pages_per_domain > 0
+                and self.domain_counts[target_domain] >= self.max_pages_per_domain
+            ):
+                continue
+
+            # If sitemap index links to another sitemap, parse it too
+            if target.endswith(".xml") or "sitemap" in target:
+                yield scrapy.Request(
+                    target,
+                    callback=self.parse_sitemap,
+                    errback=self.ignore_errback,
+                    priority=5,
+                )
+            else:
+                yield scrapy.Request(
+                    target,
+                    callback=self.parse,
+                    errback=self.on_request_error,
+                )
 
     def parse(self, response: Response) -> Iterator[Request | DocumentItem]:
         if not isinstance(response, HtmlResponse):
@@ -66,6 +120,12 @@ class SiteSpider(scrapy.Spider):
         page_url = normalize_url(response.url)
         if page_url is None:
             return
+
+        domain = (urlsplit(page_url).hostname or "").lower()
+        if self.max_pages_per_domain > 0 and self.domain_counts[domain] >= self.max_pages_per_domain:
+            return
+
+        self.domain_counts[domain] += 1
 
         title = " ".join(response.css("title::text").getall()).strip()
         block_selector = (
@@ -109,7 +169,28 @@ class SiteSpider(scrapy.Spider):
             "blocks": blocks,
         }
 
-        for link in self.link_extractor.extract_links(response):
-            target = normalize_url(link.url)
-            if target and host_is_allowed(target, self.allowed_domains):
-                yield scrapy.Request(target, callback=self.parse)
+        # Follow outgoing links if domain budget has remaining quota
+        if not self.max_pages_per_domain or self.domain_counts[domain] < self.max_pages_per_domain:
+            for link in self.link_extractor.extract_links(response):
+                target = normalize_url(link.url)
+                if target and host_is_allowed(target, self.allowed_domains):
+                    target_domain = (urlsplit(target).hostname or "").lower()
+                    if (
+                        self.max_pages_per_domain > 0
+                        and self.domain_counts[target_domain] >= self.max_pages_per_domain
+                    ):
+                        continue
+                    yield scrapy.Request(
+                        target,
+                        callback=self.parse,
+                        errback=self.on_request_error,
+                    )
+
+    def on_request_error(self, failure: Any) -> None:
+        """Log request failures politely without halting the crawl."""
+        url = getattr(getattr(failure, "request", None), "url", "unknown URL")
+        self.logger.warning("Failed request for %s: %s", url, failure.value)
+
+    def ignore_errback(self, failure: Any) -> None:
+        """Silently ignore missing sitemaps or optional resource failures."""
+        pass

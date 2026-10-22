@@ -45,6 +45,8 @@ pre-commit install
 
 ## Crawl
 
+### Single or Multi-Seed Crawl
+
 ```sh
 python -m crawler crawl \
   --seed https://example.com/ \
@@ -52,6 +54,30 @@ python -m crawler crawl \
   --allow-domain example.com \
   --database data/crawler.sqlite3
 ```
+
+### Broad Crawl (500–1,000 Websites)
+
+For crawling hundreds of domains, supply a seeds file (`seeds.txt` or `seeds.json`) with per-domain limits, sitemap discovery, and broad-scale concurrency:
+
+```sh
+python -m crawler crawl \
+  --seeds-file seeds.txt \
+  --concurrency 100 \
+  --concurrency-per-domain 2 \
+  --max-pages-per-domain 25 \
+  --max-depth 2 \
+  --sitemaps \
+  --jobdir data/crawls/job1 \
+  --database data/crawler.sqlite3
+```
+
+- `--seeds-file`: Path to a text file with one URL per line (supports `#` comments) or a JSON array of URLs.
+- `--max-pages-per-domain N`: Caps the number of indexed pages per domain (default `0` = unlimited) to prevent any single domain from starving others.
+- `--max-depth N`: Maximum link recursion depth from seed URLs (default `0` = unlimited).
+- `--sitemaps`: Automatically discovers and parses XML sitemaps (`/sitemap.xml`) to directly index authoritative documentation URLs.
+- `--jobdir DIR`: Persists the crawl queue and dupefilter state to disk, allowing interrupted crawls to be safely resumed.
+- `--concurrency N`: Maximum concurrent requests in-flight globally (default `64`).
+- `--concurrency-per-domain N`: Maximum concurrent requests per individual domain (default `2`).
 
 If `--allow-domain` is omitted, each seed's hostname is used as an allowed
 domain. Exact hostnames and their subdomains are permitted. The crawler obeys
