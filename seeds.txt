@@ -1,6 +1,7 @@
 # Curated Seed URLs for Agent Search & Crawling
 # One URL per line. Lines starting with # are ignored.
 
+# Technical Documentation
 https://fastapi.tiangolo.com/
 https://docs.scrapy.org/en/latest/
 https://docs.python.org/3/tutorial/
@@ -10,3 +11,15 @@ https://trafilatura.readthedocs.io/en/latest/
 https://playwright.dev/python/docs/intro
 https://sqlite.org/docs.html
 https://httpbin.org/html
+
+# News & Aggregators
+https://news.ycombinator.com/
+
+# Tech, Systems & AI Article Sites
+https://simonwillison.net/
+https://paulgraham.com/articles.html
+https://jvns.ca/
+https://antirez.com/
+https://danluu.com/
+https://martinfowler.com/articles/
+https://eli.thegreenplace.net/
