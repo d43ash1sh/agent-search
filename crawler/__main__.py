@@ -131,6 +131,8 @@ def _allowed(url: str, domains: list[str]) -> bool:
 
 
 def _search(args: argparse.Namespace) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     database = Path(args.database).expanduser()
     if not database.exists():
         raise SystemExit(f"Search index does not exist: {database}")

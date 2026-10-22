@@ -4,4 +4,9 @@
 https://fastapi.tiangolo.com/
 https://docs.scrapy.org/en/latest/
 https://docs.python.org/3/tutorial/
+https://docs.pydantic.dev/latest/
+https://www.python-httpx.org/
+https://trafilatura.readthedocs.io/en/latest/
+https://playwright.dev/python/docs/intro
+https://sqlite.org/docs.html
 https://httpbin.org/html
