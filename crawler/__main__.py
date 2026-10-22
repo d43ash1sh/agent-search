@@ -78,6 +78,8 @@ def _crawl(args: argparse.Namespace) -> int:
         )
         if args.sitemaps:
             command.append("--sitemaps")
+        if getattr(args, "ignore_robots", False):
+            command.append("--ignore-robots")
         if args.jobdir:
             command.extend(("--jobdir", args.jobdir))
         while True:
@@ -113,6 +115,8 @@ def _crawl(args: argparse.Namespace) -> int:
         settings.set("DEPTH_LIMIT", args.max_depth, priority="cmdline")
     if args.jobdir:
         settings.set("JOBDIR", str(Path(args.jobdir).expanduser()), priority="cmdline")
+    if getattr(args, "ignore_robots", False):
+        settings.set("ROBOTSTXT_OBEY", False, priority="cmdline")
 
     process = CrawlerProcess(settings)
     process.crawl(
@@ -232,6 +236,12 @@ def main() -> int:
         action="store_true",
         default=False,
         help="automatically discover and crawl sitemaps (/sitemap.xml)",
+    )
+    crawl.add_argument(
+        "--ignore-robots",
+        action="store_true",
+        default=False,
+        help="bypass robots.txt restrictions (use responsibly with polite delays)",
     )
     crawl.add_argument(
         "--jobdir",
