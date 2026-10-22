@@ -10,6 +10,7 @@ from services.extractor.dedup_filter import DeduplicationFilter
 from services.extractor.fallback_cleaner import FallbackCleaner
 from services.extractor.trafilatura_cleaner import TrafilaturaCleaner
 from services.queue.base import AbstractQueueBroker
+from services.queue.redis_broker import RedisQueueBroker
 
 logger = logging.getLogger(__name__)
 
@@ -84,3 +85,17 @@ class ExtractorWorker:
 
     def stop(self) -> None:
         self.is_running = False
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    broker = RedisQueueBroker()
+    worker = ExtractorWorker(broker=broker)
+    try:
+        asyncio.run(worker.run_loop())
+    except KeyboardInterrupt:
+        logger.info("Extractor worker stopped by user.")
+
+
+if __name__ == "__main__":
+    main()

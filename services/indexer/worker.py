@@ -3,8 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from services.common.config import settings
 from services.indexer.base import AbstractSearchIndex
+from services.indexer.opensearch_index import OpenSearchIndex
+from services.indexer.sqlite_index import SQLiteSearchIndex
 from services.queue.base import AbstractQueueBroker
+from services.queue.redis_broker import RedisQueueBroker
 
 logger = logging.getLogger(__name__)
 
@@ -40,3 +44,23 @@ class IndexerWorker:
 
     def stop(self) -> None:
         self.is_running = False
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    broker = RedisQueueBroker()
+    index: AbstractSearchIndex
+    if settings.index_backend == "opensearch":
+        index = OpenSearchIndex()
+    else:
+        index = SQLiteSearchIndex(settings.sqlite_path)
+
+    worker = IndexerWorker(broker=broker, index=index)
+    try:
+        asyncio.run(worker.run_loop())
+    except KeyboardInterrupt:
+        logger.info("Indexer worker stopped by user.")
+
+
+if __name__ == "__main__":
+    main()

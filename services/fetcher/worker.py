@@ -8,6 +8,7 @@ from services.common.models import FetchRequest
 from services.fetcher.browser_client import PlaywrightBrowserFetcher
 from services.fetcher.http_client import AsyncHttpFetcher
 from services.queue.base import AbstractQueueBroker
+from services.queue.redis_broker import RedisQueueBroker
 
 logger = logging.getLogger(__name__)
 
@@ -75,3 +76,17 @@ class FetcherWorker:
         await self.http_fetcher.close()
         if self.browser_fetcher:
             await self.browser_fetcher.close()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    broker = RedisQueueBroker()
+    worker = FetcherWorker(broker=broker)
+    try:
+        asyncio.run(worker.run_loop())
+    except KeyboardInterrupt:
+        logger.info("Fetcher worker stopped by user.")
+
+
+if __name__ == "__main__":
+    main()
