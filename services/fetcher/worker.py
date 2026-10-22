@@ -7,6 +7,7 @@ from services.common.config import settings
 from services.common.models import FetchRequest
 from services.fetcher.browser_client import PlaywrightBrowserFetcher
 from services.fetcher.http_client import AsyncHttpFetcher
+from services.fetcher.spa_detector import is_spa_shell
 from services.queue.base import AbstractQueueBroker
 from services.queue.redis_broker import RedisQueueBroker
 
@@ -39,8 +40,23 @@ class FetcherWorker:
             raw_record, failed_record = await self.browser_fetcher.fetch(request.url)
         else:
             raw_record, failed_record = await self.http_fetcher.fetch(request.url)
+            # Automatic SPA detection & dynamic browser upgrade
+            if raw_record and is_spa_shell(raw_record.raw_html):
+                logger.info(
+                    "Detected unrendered client-side SPA shell for %s. Automatically upgrading to Playwright...",
+                    request.url,
+                )
+                if not self.browser_fetcher:
+                    self.browser_fetcher = PlaywrightBrowserFetcher()
+                try:
+                    browser_record, _ = await self.browser_fetcher.fetch(request.url)
+                    if browser_record and len(browser_record.raw_html) > len(raw_record.raw_html):
+                        raw_record = browser_record
+                except Exception as browser_err:
+                    logger.debug("Playwright auto-fallback skipped: %s", browser_err)
 
         if raw_record:
+            raw_record.metadata = request.metadata
             await self.broker.enqueue_raw(raw_record)
             logger.info("Successfully fetched %s (status %d)", request.url, raw_record.status_code)
             return True

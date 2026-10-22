@@ -20,6 +20,7 @@ class AbstractSearchIndex(ABC):
         limit: int = 10,
         max_tokens: int = 1200,
         domains: list[str] | None = None,
+        hybrid: bool = False,
     ) -> tuple[list[SearchHit], int]:
         """Execute search query returning ranked hits and total token estimate."""
 

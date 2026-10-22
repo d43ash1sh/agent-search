@@ -31,6 +31,7 @@ class RawPageRecord(BaseModel):
     fetched_at: str = Field(default_factory=lambda: datetime.datetime.now(datetime.UTC).isoformat())
     fetcher_engine: Literal["httpx", "playwright"] = "httpx"
     elapsed_seconds: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class FailedFetchRecord(BaseModel):

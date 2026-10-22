@@ -59,6 +59,7 @@ class PgVectorIndex(AbstractSearchIndex):
         limit: int = 10,
         max_tokens: int = 1200,
         domains: list[str] | None = None,
+        hybrid: bool = False,
     ) -> tuple[list[SearchHit], int]:
         return [], 0
 

@@ -138,6 +138,11 @@ class TestAdvancedAgentFeatures:
                     assert grounded_resp.status_code == 200
                     data = grounded_resp.json()
                     assert len(data["results"]) >= 1
+
+                    # Test /dashboard HTML playground
+                    dashboard_resp = await client.get("/dashboard")
+                    assert dashboard_resp.status_code == 200
+                    assert "Agent Search" in dashboard_resp.text
                     assert "Redis Streams Manual" in data["markdown_citations"]
                     assert "<search_grounding>" in data["xml_grounding"]
 
@@ -148,6 +153,17 @@ class TestAdvancedAgentFeatures:
                     body = stream_resp.text
                     assert "event: start" in body
                     assert "event: evidence" in body
+
+                    # Test /v1/crawl/site (Recursive Crawl API)
+                    crawl_resp = await client.post(
+                        "/v1/crawl/site",
+                        json={"url": "https://docs.example.com/streams", "max_depth": 2, "max_pages": 10},
+                    )
+                    assert crawl_resp.status_code == 200
+                    crawl_data = crawl_resp.json()
+                    assert crawl_data["status"] == "ok"
+                    assert "crawl_" in crawl_data["crawl_id"]
+                    assert crawl_data["allowed_domain"] == "docs.example.com"
                     assert "event: done" in body
             finally:
                 index.close()

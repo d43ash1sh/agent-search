@@ -25,6 +25,35 @@ class ExtractorWorker:
         self.dedup = DeduplicationFilter()
         self.is_running = False
 
+    @staticmethod
+    def extract_internal_links(html: str, base_url: str, allowed_domain: str) -> list[str]:
+        import re
+        from urllib.parse import urljoin, urlsplit
+
+        from crawler.urls import host_is_allowed, normalize_url
+
+        found: set[str] = set()
+        hrefs = re.findall(r"""<a\b[^>]*href=["']([^"'#]+)["']""", html, flags=re.IGNORECASE)
+        for raw_href in hrefs:
+            full = urljoin(base_url, raw_href)
+            normalized = normalize_url(full)
+            if not normalized:
+                continue
+
+            ext = normalized.split("?")[0].split(".")[-1].lower()
+            if ext in {"png", "jpg", "jpeg", "gif", "svg", "css", "js", "pdf", "zip", "exe", "tar", "gz"}:
+                continue
+
+            if allowed_domain:
+                if host_is_allowed(normalized, [allowed_domain]):
+                    found.add(normalized)
+            else:
+                base_host = (urlsplit(base_url).hostname or "").lower()
+                if (urlsplit(normalized).hostname or "").lower() == base_host:
+                    found.add(normalized)
+
+        return list(found)
+
     def process_record(self, raw: RawPageRecord) -> CleanDocument | None:
         """Process a single raw HTML payload into a CleanDocument."""
         extracted = self.trafilatura.extract(raw.raw_html, raw.url)
@@ -69,6 +98,29 @@ class ExtractorWorker:
             doc = self.process_record(raw)
             if doc:
                 await self.broker.enqueue_document(doc)
+
+            # Recursive crawling link extraction & queueing
+            if raw.metadata and raw.metadata.get("recursive"):
+                current_depth = int(raw.metadata.get("depth", 0))
+                max_depth = int(raw.metadata.get("max_depth", 1))
+                allowed_domain = str(raw.metadata.get("allowed_domain", ""))
+                render_js = bool(raw.metadata.get("render_js", False))
+
+                if current_depth < max_depth:
+                    child_links = self.extract_internal_links(raw.raw_html, raw.url, allowed_domain)
+                    from services.common.models import FetchRequest
+
+                    for link in child_links:
+                        child_meta = dict(raw.metadata)
+                        child_meta["depth"] = current_depth + 1
+                        await self.broker.enqueue_fetch(
+                            FetchRequest(
+                                url=link,
+                                depth=current_depth + 1,
+                                render_js=render_js,
+                                metadata=child_meta,
+                            )
+                        )
             return True
         except Exception as error:
             logger.error("Extraction error for %s: %s", raw.url, error, exc_info=True)
