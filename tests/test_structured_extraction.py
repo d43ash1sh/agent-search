@@ -55,6 +55,22 @@ class TestStructuredExtractor(unittest.TestCase):
         self.assertEqual(results[1]["checkout_url"], "/checkout?plan=ent")
         self.assertEqual(results[1]["version"], "v2.6.1")
 
+    def test_extract_items_with_dict_fields_and_attribute_autodetect(self) -> None:
+        schema = {
+            "items_selector": ".product-card",
+            "fields": {
+                "name": {"selector": ".title"},
+                "checkout_url": {"selector": ".buy-btn", "attribute": "href"},
+                "version": {"selector": ".version", "type": "regex", "pattern": r"v\d+\.\d+\.\d+"},
+            },
+        }
+
+        results = self.extractor.extract(self.sample_html, schema)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["name"], "Playwright Pro")
+        self.assertEqual(results[0]["checkout_url"], "/checkout?plan=pro")
+        self.assertEqual(results[0]["version"], "v2.5.0")
+
 
 @pytest.mark.anyio
 async def test_api_extract_endpoint() -> None:

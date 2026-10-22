@@ -15,8 +15,22 @@ class StructuredExtractor:
             return []
 
         sel = Selector(text=html)
-        base_selector = schema.get("baseSelector")
-        fields = schema.get("fields", [])
+        base_selector = (
+            schema.get("baseSelector") or schema.get("items_selector") or schema.get("item_selector")
+        )
+        raw_fields = schema.get("fields", [])
+
+        fields: list[dict[str, Any]] = []
+        if isinstance(raw_fields, dict):
+            for name, f_def in raw_fields.items():
+                if isinstance(f_def, dict):
+                    fields.append({"name": name, **f_def})
+                elif isinstance(f_def, str):
+                    fields.append({"name": name, "selector": f_def, "type": "text"})
+        elif isinstance(raw_fields, list):
+            fields = raw_fields
+        else:
+            return []
 
         if not fields:
             return []
@@ -33,7 +47,7 @@ class StructuredExtractor:
                     continue
 
                 selector_css = field.get("selector", "")
-                field_type = field.get("type", "text")
+                field_type = field.get("type") or ("attribute" if "attribute" in field else "text")
                 default_val = field.get("default", None)
                 transform = field.get("transform")
                 val: Any = default_val
