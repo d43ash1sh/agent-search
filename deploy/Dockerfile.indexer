@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir opensearch-py asyncpg pgvector redis pydantic
+
+COPY services/common /app/services/common
+COPY services/queue /app/services/queue
+COPY services/indexer /app/services/indexer
+COPY crawler /app/crawler
+
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "services.indexer.worker"]

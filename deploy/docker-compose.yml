@@ -1,0 +1,103 @@
+version: "3.8"
+
+services:
+  # ── Infrastructure Components ──────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: agent_search_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  opensearch:
+    image: opensearchproject/opensearch:2.18.0
+    container_name: agent_search_opensearch
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: agent_search_postgres
+    environment:
+      - POSTGRES_DB=search_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # ── Decoupled Application Services ─────────────────────────────────────────
+  fetcher:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.fetcher
+    container_name: agent_search_fetcher
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MAX_CONNECTIONS=100
+      - MAX_KEEPALIVE=20
+      - CONNECT_TIMEOUT=10.0
+      - READ_TIMEOUT=15.0
+    restart: unless-stopped
+
+  extractor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.extractor
+    container_name: agent_search_extractor
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+
+  indexer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.indexer
+    container_name: agent_search_indexer
+    depends_on:
+      - redis
+      - opensearch
+      - postgres
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - OPENSEARCH_URL=http://opensearch:9200
+      - POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/search_db
+      - INDEX_BACKEND=opensearch
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    container_name: agent_search_api
+    depends_on:
+      - redis
+      - opensearch
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - OPENSEARCH_URL=http://opensearch:9200
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  opensearch_data:
+  pg_data:
