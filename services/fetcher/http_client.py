@@ -48,13 +48,22 @@ class AsyncHttpFetcher:
 
     async def get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                limits=self.limits,
-                timeout=self.timeout,
-                headers=DEFAULT_HEADERS,
-                follow_redirects=True,
-                http2=True,
-            )
+            try:
+                self._client = httpx.AsyncClient(
+                    limits=self.limits,
+                    timeout=self.timeout,
+                    headers=DEFAULT_HEADERS,
+                    follow_redirects=True,
+                    http2=True,
+                )
+            except Exception:
+                self._client = httpx.AsyncClient(
+                    limits=self.limits,
+                    timeout=self.timeout,
+                    headers=DEFAULT_HEADERS,
+                    follow_redirects=True,
+                    http2=False,
+                )
         return self._client
 
     async def fetch(self, url: str) -> tuple[RawPageRecord | None, FailedFetchRecord | None]:
