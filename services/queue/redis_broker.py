@@ -24,36 +24,45 @@ class RedisQueueBroker(AbstractQueueBroker):
         await client.lpush(settings.fetch_queue_name, request.model_dump_json())
 
     async def dequeue_fetch(self, timeout: float = 1.0) -> FetchRequest | None:
-        client = await self._get_client()
-        item = await client.brpop(settings.fetch_queue_name, timeout=int(max(1, timeout)))
-        if item:
-            _, payload = item
-            return FetchRequest.model_validate_json(payload)
-        return None
+        try:
+            client = await self._get_client()
+            item = await client.brpop(settings.fetch_queue_name, timeout=int(max(1, timeout)))
+            if item:
+                _, payload = item
+                return FetchRequest.model_validate_json(payload)
+            return None
+        except (aioredis.TimeoutError, aioredis.ConnectionError):
+            return None
 
     async def enqueue_raw(self, record: RawPageRecord) -> None:
         client = await self._get_client()
         await client.lpush(settings.staging_queue_name, record.model_dump_json())
 
     async def dequeue_raw(self, timeout: float = 1.0) -> RawPageRecord | None:
-        client = await self._get_client()
-        item = await client.brpop(settings.staging_queue_name, timeout=int(max(1, timeout)))
-        if item:
-            _, payload = item
-            return RawPageRecord.model_validate_json(payload)
-        return None
+        try:
+            client = await self._get_client()
+            item = await client.brpop(settings.staging_queue_name, timeout=int(max(1, timeout)))
+            if item:
+                _, payload = item
+                return RawPageRecord.model_validate_json(payload)
+            return None
+        except (aioredis.TimeoutError, aioredis.ConnectionError):
+            return None
 
     async def enqueue_document(self, doc: CleanDocument) -> None:
         client = await self._get_client()
         await client.lpush(settings.index_queue_name, doc.model_dump_json())
 
     async def dequeue_document(self, timeout: float = 1.0) -> CleanDocument | None:
-        client = await self._get_client()
-        item = await client.brpop(settings.index_queue_name, timeout=int(max(1, timeout)))
-        if item:
-            _, payload = item
-            return CleanDocument.model_validate_json(payload)
-        return None
+        try:
+            client = await self._get_client()
+            item = await client.brpop(settings.index_queue_name, timeout=int(max(1, timeout)))
+            if item:
+                _, payload = item
+                return CleanDocument.model_validate_json(payload)
+            return None
+        except (aioredis.TimeoutError, aioredis.ConnectionError):
+            return None
 
     async def route_to_dlq(self, failed: FailedFetchRecord) -> None:
         client = await self._get_client()
