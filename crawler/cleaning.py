@@ -6,6 +6,12 @@ from typing import Any
 
 import trafilatura
 
+# Silence internal parser warnings from third-party library (e.g. empty link tags, missing href)
+logging.getLogger("trafilatura").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.xml").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.htmlprocessing").setLevel(logging.ERROR)
+
 logger = logging.getLogger(__name__)
 
 

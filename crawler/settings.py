@@ -1,3 +1,5 @@
+import logging
+
 BOT_NAME = "agent_search_crawler"
 
 SPIDER_MODULES = ["crawler.spiders"]
@@ -58,4 +60,11 @@ AUTOTHROTTLE_START_DELAY = 0.5
 AUTOTHROTTLE_MAX_DELAY = 10.0
 AUTOTHROTTLE_TARGET_CONCURRENCY = 2.0
 
+# ── Logging Configuration ───────────────────────────────────────────────────
 LOG_LEVEL = "INFO"
+
+# Silence noisy third-party internal parser warnings (e.g. empty link icons, missing href in docs)
+logging.getLogger("trafilatura").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.xml").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.htmlprocessing").setLevel(logging.ERROR)

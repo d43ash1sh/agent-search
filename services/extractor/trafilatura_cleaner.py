@@ -7,6 +7,9 @@ import trafilatura
 
 from crawler.cleaning import sanitize_markdown
 
+logging.getLogger("trafilatura").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.xml").setLevel(logging.ERROR)
+
 logger = logging.getLogger(__name__)
 
 
