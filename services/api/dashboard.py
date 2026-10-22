@@ -78,7 +78,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         .metrics-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 1rem; margin-bottom: 1.5rem;
         }
         .metric-card {
@@ -102,6 +102,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
         }
         .btn:hover { opacity: 0.9; }
+
+        .btn-outline {
+            background: transparent; color: var(--accent); border: 1px solid var(--accent);
+            padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; font-size: 0.875rem;
+        }
+        .btn-outline:hover { background: var(--accent-glow); }
 
         .controls-row {
             display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: center;
@@ -154,6 +160,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             padding: 1rem; font-family: var(--font-mono); font-size: 0.85rem; color: #e2e8f0;
             overflow-x: auto; white-space: pre; margin-top: 1rem;
         }
+
+        .frontier-table {
+            width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.875rem;
+        }
+        .frontier-table th, .frontier-table td {
+            padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border);
+        }
+        .frontier-table th { background: #131d31; color: var(--text-muted); font-weight: 600; }
+        .frontier-table tr:hover { background: #141f35; }
+        .badge {
+            display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;
+        }
+        .badge-discovered { background: #1e3a8a; color: #93c5fd; }
+        .badge-queued { background: #854d0e; color: #fef08a; }
+        .badge-crawled { background: #065f46; color: #a7f3d0; }
     </style>
 </head>
 <body>
@@ -162,8 +183,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="logo">
                 <div class="logo-icon">⚡</div>
                 <div class="logo-text">
-                    <h1>Agent Search Engine</h1>
-                    <p>Decoupled Crawler • Trafilatura Markdown • FlashRank Reranker • MCP Server</p>
+                    <h1>Agent Search & Crawl Engine</h1>
+                    <p>Decoupled Crawler • FastEmbed Vector RRF • URL Frontier • FlashRank</p>
                 </div>
             </div>
             <div class="header-links">
@@ -187,6 +208,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <span class="metric-value" id="stat-domains">-</span>
             </div>
             <div class="metric-card">
+                <span class="metric-title">Frontier Outlinks</span>
+                <span class="metric-value" id="stat-frontier">-</span>
+            </div>
+            <div class="metric-card">
                 <span class="metric-title">Queue Backlog</span>
                 <span class="metric-value" id="stat-queue">-</span>
             </div>
@@ -195,6 +220,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <!-- Navigation Tabs -->
         <div class="tabs">
             <button class="tab-btn active" onclick="switchTab('search')">🔍 Search Playground</button>
+            <button class="tab-btn" onclick="switchTab('frontier')">🌐 URL Frontier & Discovery</button>
             <button class="tab-btn" onclick="switchTab('crawl')">🕷️ Dispatch Scraper</button>
             <button class="tab-btn" onclick="switchTab('queues')">📊 Queue Telemetry</button>
         </div>
@@ -203,7 +229,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div id="tab-search" class="tab-pane active">
             <div class="card">
                 <div class="search-box">
-                    <input type="text" id="search-query" class="search-input" placeholder="Search documentation (e.g. playwright browser context, fastapi background tasks)..." />
+                    <input type="text" id="search-query" class="search-input" placeholder="Search documentation, essays, or code (e.g. sqlite locks, simon willison llm)..." />
                     <button class="btn" onclick="runSearch()">Search</button>
                 </div>
                 <div class="controls-row">
@@ -222,29 +248,69 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                     <div class="control-group">
                         <label>
-                            <input type="checkbox" id="search-rerank" checked /> Neural Rerank (FlashRank)
+                            <input type="checkbox" id="search-hybrid" checked /> FastEmbed Vector Search
+                        </label>
+                    </div>
+                    <div class="control-group">
+                        <label>
+                            <input type="checkbox" id="search-rerank" checked /> FlashRank Neural Rerank
                         </label>
                     </div>
                 </div>
 
                 <div id="search-results" class="results-section">
-                    <p style="color: var(--text-muted); text-align: center; padding: 2rem;">Type a query above to test live retrieval and neural reranking.</p>
+                    <p style="color: var(--text-muted); text-align: center; padding: 2rem;">Type a query above to test live hybrid search and neural reranking.</p>
                 </div>
             </div>
         </div>
 
-        <!-- TAB 2: Dispatch Scraper -->
+        <!-- TAB 2: URL Frontier & Discovery -->
+        <div id="tab-frontier" class="tab-pane">
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem;">
+                    <div>
+                        <h3 style="font-size: 1.15rem;">Cross-Site URL Frontier</h3>
+                        <p style="color: var(--text-muted); font-size: 0.85rem;">Ledger of URLs discovered across external hyperlinks. You can enqueue them to crawl new websites.</p>
+                    </div>
+                    <div style="display: flex; gap: 0.75rem; align-items: center;">
+                        <button class="btn-outline" onclick="loadFrontierData()">Refresh</button>
+                        <button class="btn" onclick="crawlFrontier()">Crawl 25 Discovered URLs</button>
+                    </div>
+                </div>
+
+                <div id="frontier-alert" class="alert"></div>
+
+                <div style="overflow-x: auto;">
+                    <table class="frontier-table">
+                        <thead>
+                            <tr>
+                                <th>Discovered URL</th>
+                                <th>Domain</th>
+                                <th>Found On (Source)</th>
+                                <th>Status</th>
+                                <th>Discovered At</th>
+                            </tr>
+                        </thead>
+                        <tbody id="frontier-rows">
+                            <tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">Loading frontier ledger...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 3: Dispatch Scraper -->
         <div id="tab-crawl" class="tab-pane">
             <div class="card">
                 <h3 style="margin-bottom: 0.75rem;">Enqueue URLs for Distributed Crawler</h3>
                 <p style="color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
-                    Submit one or more URLs (one per line). The fetcher service will process them via HTTP/2 or Playwright, extract clean Markdown, and update the search index.
+                    Submit one or more URLs (one per line). The fetcher service will process them via HTTP/2 or Playwright, extract clean Markdown, chunk passages, and store all outlinks into the Frontier.
                 </p>
                 <div id="crawl-alert" class="alert"></div>
-                <textarea id="crawl-urls" class="textarea-box" placeholder="https://example.com/docs&#10;https://fastapi.tiangolo.com/tutorial/"></textarea>
+                <textarea id="crawl-urls" class="textarea-box" placeholder="https://news.ycombinator.com&#10;https://simonwillison.net/"></textarea>
                 <div class="controls-row">
                     <div class="control-group">
-                        <label><input type="checkbox" id="crawl-render-js" /> Render JavaScript (Force Playwright)</label>
+                        <label><input type="checkbox" id="crawl-render-js" /> Force Playwright JS</label>
                     </div>
                     <div class="control-group">
                         <label for="crawl-priority">Priority:</label>
@@ -256,9 +322,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <button class="btn" onclick="submitCrawl()">Dispatch to Queue</button>
                 </div>
             </div>
+
+            <div class="card">
+                <h3 style="margin-bottom: 0.75rem;">Recursive Cross-Site Crawler</h3>
+                <p style="color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
+                    Initiate a recursive site crawl that follows hyperlinks. Toggle <strong>Follow External Outlinks</strong> to crawl newly found external websites across the web!
+                </p>
+                <div class="search-box">
+                    <input type="text" id="rec-url" class="search-input" placeholder="https://news.ycombinator.com" />
+                    <button class="btn" onclick="submitRecursiveCrawl()">Launch Recursive Crawl</button>
+                </div>
+                <div class="controls-row">
+                    <div class="control-group">
+                        <label for="rec-depth">Max Depth:</label>
+                        <select id="rec-depth">
+                            <option value="1" selected>1 hop</option>
+                            <option value="2">2 hops</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label><input type="checkbox" id="rec-external" checked /> Follow External Links (Cross-Site Discovery)</label>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <!-- TAB 3: Queue Telemetry -->
+        <!-- TAB 4: Queue Telemetry -->
         <div id="tab-queues" class="tab-pane">
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -277,6 +366,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             event.target.classList.add('active');
             document.getElementById('tab-' + name).classList.add('active');
             if (name === 'queues') loadQueueStatus();
+            if (name === 'frontier') loadFrontierData();
         }
 
         async function fetchStats() {
@@ -289,6 +379,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             } catch (e) {
                 console.error("Failed to load stats", e);
             }
+
+            try {
+                const resF = await fetch('/v1/frontier/stats');
+                const fData = await resF.json();
+                document.getElementById('stat-frontier').innerText = (fData.total_discovered || 0).toLocaleString();
+            } catch (e) {}
         }
 
         async function loadQueueStatus() {
@@ -306,6 +402,57 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
         }
 
+        async function loadFrontierData() {
+            const tbody = document.getElementById('frontier-rows');
+            try {
+                const res = await fetch('/v1/frontier/urls?limit=30');
+                const urls = await res.json();
+                if (!urls || urls.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No URLs in frontier ledger yet. Run a crawl to discover outlinks!</td></tr>';
+                    return;
+                }
+                let html = '';
+                urls.forEach(u => {
+                    const badgeClass = u.status === 'crawled' ? 'badge-crawled' : (u.status === 'queued' ? 'badge-queued' : 'badge-discovered');
+                    html += `
+                        <tr>
+                            <td><a href="${escapeHtml(u.url)}" target="_blank" style="color: var(--accent); text-decoration: none;">${escapeHtml(u.url)}</a></td>
+                            <td style="font-family: var(--font-mono); color: #cbd5e1;">${escapeHtml(u.domain)}</td>
+                            <td><a href="${escapeHtml(u.source_url)}" target="_blank" style="color: var(--text-muted); text-decoration: none; font-size: 0.8rem;">${escapeHtml(u.source_url.slice(0, 45))}...</a></td>
+                            <td><span class="badge ${badgeClass}">${escapeHtml(u.status)}</span></td>
+                            <td style="color: var(--text-muted); font-size: 0.8rem;">${escapeHtml(u.discovered_at || '')}</td>
+                        </tr>
+                    `;
+                });
+                tbody.innerHTML = html;
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5" style="color: var(--danger); text-align: center; padding: 1.5rem;">Failed to load frontier: ${e.message}</td></tr>`;
+            }
+        }
+
+        async function crawlFrontier() {
+            const alertBox = document.getElementById('frontier-alert');
+            alertBox.style.display = 'none';
+            try {
+                const res = await fetch('/v1/frontier/crawl', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ limit: 25, max_per_domain: 5 })
+                });
+                const data = await res.json();
+                alertBox.className = 'alert success';
+                alertBox.innerText = `Enqueued ${data.enqueued_count} pending URLs from frontier to fetch queue!`;
+                alertBox.style.display = 'block';
+                loadFrontierData();
+                fetchStats();
+                loadQueueStatus();
+            } catch (e) {
+                alertBox.className = 'alert error';
+                alertBox.innerText = `Frontier crawl failed: ${e.message}`;
+                alertBox.style.display = 'block';
+            }
+        }
+
         async function runSearch() {
             const query = document.getElementById('search-query').value.trim();
             if (!query) return;
@@ -313,15 +460,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const limit = parseInt(document.getElementById('search-limit').value, 10);
             const tokens = parseInt(document.getElementById('search-tokens').value, 10);
             const rerank = document.getElementById('search-rerank').checked;
+            const hybrid = document.getElementById('search-hybrid').checked;
 
             const resultsBox = document.getElementById('search-results');
-            resultsBox.innerHTML = '<p style="color: var(--text-muted); padding: 1.5rem; text-align: center;">Searching and neural reranking...</p>';
+            resultsBox.innerHTML = '<p style="color: var(--text-muted); padding: 1.5rem; text-align: center;">Searching and reranking...</p>';
 
             try {
                 const res = await fetch('/v1/search/grounded', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, limit, tokens, rerank })
+                    body: JSON.stringify({ query, limit, tokens, rerank, hybrid })
                 });
                 const data = await res.json();
 
@@ -330,20 +478,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     return;
                 }
 
-                let html = `<div style="margin-bottom: 1rem; color: var(--text-muted); font-size: 0.85rem;">
-                    Found <strong>${data.results.length}</strong> evidence passages (${data.estimated_tokens} tokens)
-                </div>`;
-
+                let html = '';
                 data.results.forEach((hit, idx) => {
-                    const score = (hit.score || 0).toFixed(4);
                     html += `
                         <div class="hit-card">
                             <div class="hit-header">
                                 <div>
-                                    <a class="hit-title" href="${hit.url}" target="_blank">[${idx + 1}] ${hit.title || hit.url}</a>
-                                    <div class="hit-url">${hit.url}</div>
+                                    <a href="${escapeHtml(hit.url)}" target="_blank" class="hit-title">${escapeHtml(hit.title || hit.url)}</a>
+                                    <div class="hit-url">${escapeHtml(hit.url)}</div>
                                 </div>
-                                <span class="hit-badge">${score}</span>
+                                <span class="hit-badge">Rank #${idx + 1} • Score: ${hit.score.toFixed(3)}</span>
                             </div>
                             <div class="hit-snippet">${escapeHtml(hit.text)}</div>
                         </div>
@@ -359,7 +503,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         async function submitCrawl() {
             const raw = document.getElementById('crawl-urls').value.trim();
             const alertBox = document.getElementById('crawl-alert');
-            alertBox.className = 'alert';
             alertBox.style.display = 'none';
 
             if (!raw) return;
@@ -376,17 +519,40 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 const data = await res.json();
                 alertBox.className = 'alert success';
                 alertBox.innerText = `Successfully enqueued ${data.enqueued} URL(s) to fetch pipeline!`;
+                alertBox.style.display = 'block';
                 document.getElementById('crawl-urls').value = '';
                 fetchStats();
                 loadQueueStatus();
             } catch (e) {
                 alertBox.className = 'alert error';
                 alertBox.innerText = `Failed to enqueue URLs: ${e.message}`;
+                alertBox.style.display = 'block';
+            }
+        }
+
+        async function submitRecursiveCrawl() {
+            const url = document.getElementById('rec-url').value.trim();
+            if (!url) return;
+            const maxDepth = parseInt(document.getElementById('rec-depth').value, 10);
+            const followExternal = document.getElementById('rec-external').checked;
+
+            try {
+                const res = await fetch('/v1/crawl/site', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, max_depth: maxDepth, follow_external: followExternal })
+                });
+                const data = await res.json();
+                alert(`Recursive crawl launched! ${data.message}`);
+                fetchStats();
+                loadQueueStatus();
+            } catch (e) {
+                alert(`Recursive crawl failed: ${e.message}`);
             }
         }
 
         function escapeHtml(str) {
-            return str
+            return (str || '')
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")

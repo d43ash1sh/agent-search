@@ -126,6 +126,26 @@ class SQLiteSearchIndex(AbstractSearchIndex):
     async def get_stats(self) -> dict[str, Any]:
         return self._service.get_stats()
 
+    def record_frontier_urls(self, records: list[dict[str, Any]]) -> int:
+        return self._pipeline.record_frontier_urls(records)
+
+    def update_frontier_status(self, url: str, status: str) -> None:
+        self._pipeline.update_frontier_status(url, status)
+
+    def get_frontier_stats(self) -> dict[str, Any]:
+        return self._pipeline.get_frontier_stats()
+
+    def get_frontier_urls(
+        self,
+        status: str | None = None,
+        domain: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        return self._pipeline.get_frontier_urls(status=status, domain=domain, limit=limit)
+
+    def get_pending_frontier_urls(self, limit: int = 50, max_per_domain: int = 10) -> list[dict[str, Any]]:
+        return self._pipeline.get_pending_frontier_urls(limit=limit, max_per_domain=max_per_domain)
+
     def close(self) -> None:
         if self._pipeline.connection:
             self._pipeline.close_spider()

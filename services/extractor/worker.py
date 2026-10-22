@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import urljoin, urlsplit
 
+from crawler.pipelines import SQLitePipeline
+from crawler.urls import host_is_allowed, normalize_url
+from services.common.config import settings
 from services.common.hashing import compute_sha256, compute_simhash
-from services.common.models import CleanDocument, RawPageRecord
+from services.common.models import CleanDocument, FetchRequest, RawPageRecord
 from services.extractor.chunker import chunk_document
 from services.extractor.dedup_filter import DeduplicationFilter
 from services.extractor.fallback_cleaner import FallbackCleaner
@@ -16,23 +20,26 @@ logger = logging.getLogger(__name__)
 
 
 class ExtractorWorker:
-    """CPU-bound worker that extracts, chunks, and deduplicates raw pages."""
+    """CPU-bound worker that extracts, chunks, deduplicates, and manages the URL frontier."""
 
-    def __init__(self, broker: AbstractQueueBroker) -> None:
+    def __init__(self, broker: AbstractQueueBroker, sqlite_path: str | None = None) -> None:
         self.broker = broker
         self.trafilatura = TrafilaturaCleaner()
         self.fallback = FallbackCleaner()
         self.dedup = DeduplicationFilter()
+        self.pipeline = SQLitePipeline(sqlite_path or settings.sqlite_path)
+        self.pipeline.open_spider()
         self.is_running = False
 
     @staticmethod
-    def extract_internal_links(html: str, base_url: str, allowed_domain: str) -> list[str]:
+    def extract_all_links(html: str, base_url: str) -> tuple[list[str], list[str]]:
+        """Extract both internal links and external outlinks from HTML."""
         import re
-        from urllib.parse import urljoin, urlsplit
 
-        from crawler.urls import host_is_allowed, normalize_url
+        base_host = (urlsplit(base_url).hostname or "").lower()
+        internal: set[str] = set()
+        external: set[str] = set()
 
-        found: set[str] = set()
         hrefs = re.findall(r"""<a\b[^>]*href=["']([^"'#]+)["']""", html, flags=re.IGNORECASE)
         for raw_href in hrefs:
             full = urljoin(base_url, raw_href)
@@ -41,18 +48,43 @@ class ExtractorWorker:
                 continue
 
             ext = normalized.split("?")[0].split(".")[-1].lower()
-            if ext in {"png", "jpg", "jpeg", "gif", "svg", "css", "js", "pdf", "zip", "exe", "tar", "gz"}:
+            if ext in {
+                "png",
+                "jpg",
+                "jpeg",
+                "gif",
+                "svg",
+                "css",
+                "js",
+                "pdf",
+                "zip",
+                "exe",
+                "tar",
+                "gz",
+                "mp4",
+                "mp3",
+                "webp",
+                "ico",
+            }:
                 continue
 
-            if allowed_domain:
-                if host_is_allowed(normalized, [allowed_domain]):
-                    found.add(normalized)
-            else:
-                base_host = (urlsplit(base_url).hostname or "").lower()
-                if (urlsplit(normalized).hostname or "").lower() == base_host:
-                    found.add(normalized)
+            host = (urlsplit(normalized).hostname or "").lower()
+            if not host:
+                continue
 
-        return list(found)
+            if host == base_host or host.endswith("." + base_host):
+                internal.add(normalized)
+            else:
+                external.add(normalized)
+
+        return list(internal), list(external)
+
+    @classmethod
+    def extract_internal_links(cls, html: str, base_url: str, allowed_domain: str) -> list[str]:
+        internal, _ = cls.extract_all_links(html, base_url)
+        if allowed_domain:
+            return [url for url in internal if host_is_allowed(url, [allowed_domain])]
+        return internal
 
     def process_record(self, raw: RawPageRecord) -> CleanDocument | None:
         """Process a single raw HTML payload into a CleanDocument."""
@@ -99,18 +131,37 @@ class ExtractorWorker:
             if doc:
                 await self.broker.enqueue_document(doc)
 
+            # Discover all links (both internal within the site and external outlinks)
+            internal_links, external_links = self.extract_all_links(raw.raw_html, raw.url)
+            current_depth = int(raw.metadata.get("depth", 0)) if raw.metadata else 0
+
+            # Store discovered URLs in the persistent SQLite frontier ledger
+            frontier_records = [
+                {
+                    "url": link,
+                    "domain": (urlsplit(link).hostname or "").lower(),
+                    "source_url": raw.url,
+                    "depth": current_depth + 1,
+                    "status": "discovered",
+                }
+                for link in (internal_links + external_links)
+            ]
+            if frontier_records:
+                self.pipeline.record_frontier_urls(frontier_records)
+
             # Recursive crawling link extraction & queueing
             if raw.metadata and raw.metadata.get("recursive"):
-                current_depth = int(raw.metadata.get("depth", 0))
                 max_depth = int(raw.metadata.get("max_depth", 1))
                 allowed_domain = str(raw.metadata.get("allowed_domain", ""))
                 render_js = bool(raw.metadata.get("render_js", False))
+                follow_external = bool(raw.metadata.get("follow_external", False))
+                max_external_depth = int(raw.metadata.get("max_external_depth", 1))
 
+                # 1. Enqueue internal child links within allowed depth
                 if current_depth < max_depth:
-                    child_links = self.extract_internal_links(raw.raw_html, raw.url, allowed_domain)
-                    from services.common.models import FetchRequest
-
-                    for link in child_links:
+                    for link in internal_links:
+                        if allowed_domain and not host_is_allowed(link, [allowed_domain]):
+                            continue
                         child_meta = dict(raw.metadata)
                         child_meta["depth"] = current_depth + 1
                         await self.broker.enqueue_fetch(
@@ -121,6 +172,31 @@ class ExtractorWorker:
                                 metadata=child_meta,
                             )
                         )
+                        self.pipeline.update_frontier_status(link, "queued")
+
+                # 2. Enqueue external outlinks if cross-site broad crawling is requested
+                if follow_external and current_depth < max_external_depth:
+                    domain_counts: dict[str, int] = {}
+                    for link in external_links:
+                        target_domain = (urlsplit(link).hostname or "").lower()
+                        # Limit to max 5 external links per domain per page to maintain broad diversity
+                        if domain_counts.get(target_domain, 0) >= 5:
+                            continue
+                        domain_counts[target_domain] = domain_counts.get(target_domain, 0) + 1
+
+                        ext_meta = dict(raw.metadata)
+                        ext_meta["depth"] = current_depth + 1
+                        ext_meta["allowed_domain"] = target_domain
+                        await self.broker.enqueue_fetch(
+                            FetchRequest(
+                                url=link,
+                                depth=current_depth + 1,
+                                render_js=render_js,
+                                metadata=ext_meta,
+                            )
+                        )
+                        self.pipeline.update_frontier_status(link, "queued")
+
             return True
         except Exception as error:
             logger.error("Extraction error for %s: %s", raw.url, error, exc_info=True)
@@ -137,6 +213,8 @@ class ExtractorWorker:
 
     def stop(self) -> None:
         self.is_running = False
+        if self.pipeline.connection:
+            self.pipeline.close_spider()
 
 
 def main() -> None:

@@ -160,6 +160,20 @@ class SQLitePipeline:
             WHERE NOT EXISTS (SELECT 1 FROM passages_fts WHERE rowid = p.id)
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS frontier_urls (
+                url TEXT PRIMARY KEY,
+                domain TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                depth INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'discovered',
+                discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.connection.execute("CREATE INDEX IF NOT EXISTS idx_frontier_domain ON frontier_urls(domain)")
+        self.connection.execute("CREATE INDEX IF NOT EXISTS idx_frontier_status ON frontier_urls(status)")
         self.connection.commit()
 
     def process_item(self, item: DocumentItem) -> DocumentItem:
@@ -218,8 +232,125 @@ class SQLitePipeline:
                 for ordinal, (passage, evidence_id, start, end) in enumerate(passage_records)
             ],
         )
+        self.connection.execute(
+            """
+            INSERT INTO frontier_urls(url, domain, source_url, depth, status, discovered_at)
+            VALUES (?, ?, ?, 0, 'crawled', CURRENT_TIMESTAMP)
+            ON CONFLICT(url) DO UPDATE SET status = 'crawled'
+            """,
+            (item["url"], domain, item["url"]),
+        )
         self.connection.commit()
         return item
+
+    def record_frontier_urls(self, records: list[dict[str, Any]]) -> int:
+        if self.connection is None or not records:
+            return 0
+        inserted = 0
+        for r in records:
+            res = self.connection.execute(
+                """
+                INSERT OR IGNORE INTO frontier_urls(url, domain, source_url, depth, status, discovered_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    r["url"],
+                    r.get("domain") or (urlsplit(r["url"]).hostname or "").lower(),
+                    r.get("source_url", ""),
+                    r.get("depth", 0),
+                    r.get("status", "discovered"),
+                ),
+            )
+            inserted += res.rowcount
+        self.connection.commit()
+        return inserted
+
+    def update_frontier_status(self, url: str, status: str) -> None:
+        if self.connection is None:
+            return
+        self.connection.execute("UPDATE frontier_urls SET status = ? WHERE url = ?", (status, url))
+        self.connection.commit()
+
+    def get_frontier_stats(self) -> dict[str, Any]:
+        if self.connection is None:
+            return {}
+        cur = self.connection.cursor()
+        total = cur.execute("SELECT count(*) FROM frontier_urls").fetchone()[0]
+        domains = cur.execute("SELECT count(DISTINCT domain) FROM frontier_urls").fetchone()[0]
+        discovered = cur.execute("SELECT count(*) FROM frontier_urls WHERE status = 'discovered'").fetchone()[
+            0
+        ]
+        queued = cur.execute("SELECT count(*) FROM frontier_urls WHERE status = 'queued'").fetchone()[0]
+        crawled = cur.execute("SELECT count(*) FROM frontier_urls WHERE status = 'crawled'").fetchone()[0]
+        return {
+            "total_discovered": total,
+            "total_domains": domains,
+            "discovered": discovered,
+            "queued": queued,
+            "crawled": crawled,
+        }
+
+    def get_frontier_urls(
+        self,
+        status: str | None = None,
+        domain: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        if self.connection is None:
+            return []
+        query = "SELECT url, domain, source_url, depth, status, discovered_at FROM frontier_urls WHERE 1=1"
+        params: list[Any] = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if domain:
+            query += " AND domain = ?"
+            params.append(domain)
+        query += " ORDER BY rowid DESC LIMIT ?"
+        params.append(limit)
+        cur = self.connection.cursor()
+        rows = cur.execute(query, params).fetchall()
+        return [
+            {
+                "url": r[0],
+                "domain": r[1],
+                "source_url": r[2],
+                "depth": r[3],
+                "status": r[4],
+                "discovered_at": r[5],
+            }
+            for r in rows
+        ]
+
+    def get_pending_frontier_urls(self, limit: int = 50, max_per_domain: int = 10) -> list[dict[str, Any]]:
+        """Retrieve pending discovered URLs partitioned by domain to preserve domain diversity."""
+        if self.connection is None:
+            return []
+        cur = self.connection.cursor()
+        query = """
+            SELECT url, domain, source_url, depth, status, discovered_at
+            FROM (
+                SELECT url, domain, source_url, depth, status, discovered_at, rowid as r_id,
+                       ROW_NUMBER() OVER(PARTITION BY domain ORDER BY rowid ASC) as rn
+                FROM frontier_urls
+                WHERE status = 'discovered'
+            )
+            WHERE rn <= ?
+            ORDER BY r_id ASC
+            LIMIT ?
+        """
+        rows = cur.execute(query, (max_per_domain, limit)).fetchall()
+        return [
+            {
+                "url": r[0],
+                "domain": r[1],
+                "source_url": r[2],
+                "depth": r[3],
+                "status": r[4],
+                "discovered_at": r[5],
+            }
+            for r in rows
+        ]
 
     def close_spider(self) -> None:
         if self.connection is not None:

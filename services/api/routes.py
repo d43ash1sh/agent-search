@@ -56,6 +56,8 @@ class RecursiveCrawlRequest(BaseModel):
     max_depth: int = 1
     max_pages: int = 50
     render_js: bool = False
+    follow_external: bool = False
+    max_external_depth: int = 1
 
 
 class RecursiveCrawlResponse(BaseModel):
@@ -65,6 +67,35 @@ class RecursiveCrawlResponse(BaseModel):
     allowed_domain: str
     max_depth: int
     message: str
+
+
+class FrontierStatsResponse(BaseModel):
+    total_discovered: int
+    total_domains: int
+    discovered: int
+    queued: int
+    crawled: int
+
+
+class FrontierUrlItem(BaseModel):
+    url: str
+    domain: str
+    source_url: str
+    depth: int
+    status: str
+    discovered_at: str
+
+
+class FrontierCrawlRequest(BaseModel):
+    limit: int = 25
+    max_per_domain: int = 5
+    render_js: bool = False
+
+
+class FrontierCrawlResponse(BaseModel):
+    status: str
+    enqueued_count: int
+    urls: list[str]
 
 
 class ExtractRequest(BaseModel):
@@ -207,6 +238,8 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
                     "max_pages": req.max_pages,
                     "allowed_domain": domain,
                     "render_js": req.render_js,
+                    "follow_external": req.follow_external,
+                    "max_external_depth": req.max_external_depth,
                 },
             )
         )
@@ -217,7 +250,50 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
             seed_url=req.url,
             allowed_domain=domain,
             max_depth=req.max_depth,
-            message=f"Recursive crawl initiated for {domain} (max_depth={req.max_depth})",
+            message=f"Recursive crawl initiated for {domain} (max_depth={req.max_depth}, follow_external={req.follow_external})",
+        )
+
+    @api.get("/v1/frontier/stats", response_model=FrontierStatsResponse)
+    async def get_frontier_stats() -> FrontierStatsResponse:
+        stats = index.get_frontier_stats()
+        return FrontierStatsResponse(
+            total_discovered=stats.get("total_discovered", 0),
+            total_domains=stats.get("total_domains", 0),
+            discovered=stats.get("discovered", 0),
+            queued=stats.get("queued", 0),
+            crawled=stats.get("crawled", 0),
+        )
+
+    @api.get("/v1/frontier/urls", response_model=list[FrontierUrlItem])
+    async def get_frontier_urls(
+        status: str | None = None,
+        domain: str | None = None,
+        limit: int = 50,
+    ) -> list[FrontierUrlItem]:
+        items = index.get_frontier_urls(status=status, domain=domain, limit=limit)
+        return [FrontierUrlItem(**item) for item in items]
+
+    @api.post("/v1/frontier/crawl", response_model=FrontierCrawlResponse)
+    async def crawl_frontier(req: FrontierCrawlRequest) -> FrontierCrawlResponse:
+        pending = index.get_pending_frontier_urls(limit=req.limit, max_per_domain=req.max_per_domain)
+        enqueued_urls: list[str] = []
+        for item in pending:
+            url = item["url"]
+            await broker.enqueue_fetch(
+                FetchRequest(
+                    url=url,
+                    depth=item.get("depth", 1),
+                    render_js=req.render_js,
+                    metadata={"source_url": item.get("source_url", ""), "from_frontier": True},
+                )
+            )
+            index.update_frontier_status(url, "queued")
+            enqueued_urls.append(url)
+
+        return FrontierCrawlResponse(
+            status="ok",
+            enqueued_count=len(enqueued_urls),
+            urls=enqueued_urls,
         )
 
     @api.post("/v1/extract", response_model=ExtractResponse)
