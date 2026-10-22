@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
+
 import redis.asyncio as aioredis
 
 from services.common.config import settings
 from services.common.models import CleanDocument, FailedFetchRecord, FetchRequest, RawPageRecord
 from services.queue.base import AbstractQueueBroker
 
+logger = logging.getLogger(__name__)
+
 
 class RedisQueueBroker(AbstractQueueBroker):
-    """Distributed Redis-backed broker using atomic list push/pop operations."""
+    """Distributed Redis-backed broker using atomic list push/pop operations with auto-reconnection."""
 
     def __init__(self, redis_url: str | None = None) -> None:
         self.url = redis_url or settings.redis_url
@@ -16,72 +22,101 @@ class RedisQueueBroker(AbstractQueueBroker):
 
     async def _get_client(self) -> aioredis.Redis:
         if self.redis is None:
-            self.redis = aioredis.from_url(self.url, decode_responses=True)
+            self.redis = aioredis.from_url(
+                self.url,
+                decode_responses=True,
+                socket_connect_timeout=3.0,
+                socket_timeout=5.0,
+                socket_keepalive=True,
+                health_check_interval=15,
+                retry_on_timeout=True,
+            )
         return self.redis
 
+    async def _reset_client(self) -> None:
+        if self.redis is not None:
+            with contextlib.suppress(Exception):
+                await self.redis.aclose()
+            self.redis = None
+
+    async def _enqueue_with_retry(self, queue_name: str, payload: str, retries: int = 2) -> None:
+        for attempt in range(retries):
+            try:
+                client = await self._get_client()
+                await client.lpush(queue_name, payload)
+                return
+            except (aioredis.TimeoutError, aioredis.ConnectionError, Exception) as exc:
+                logger.warning(
+                    "Redis lpush to '%s' failed (attempt %d/%d): %s",
+                    queue_name,
+                    attempt + 1,
+                    retries,
+                    exc,
+                )
+                await self._reset_client()
+                if attempt == retries - 1:
+                    raise
+                await asyncio.sleep(0.5)
+
+    async def _dequeue_with_fallback(self, queue_name: str, timeout: float = 1.0) -> str | None:
+        try:
+            client = await self._get_client()
+            item = await client.brpop(queue_name, timeout=int(max(1, timeout)))
+            if item:
+                _, payload = item
+                return payload.decode("utf-8") if isinstance(payload, bytes) else str(payload)
+            return None
+        except (aioredis.TimeoutError, aioredis.ConnectionError, Exception) as exc:
+            logger.debug("Redis brpop from '%s' timed out or disconnected: %s", queue_name, exc)
+            await self._reset_client()
+            return None
+
     async def enqueue_fetch(self, request: FetchRequest) -> None:
-        client = await self._get_client()
-        await client.lpush(settings.fetch_queue_name, request.model_dump_json())
+        await self._enqueue_with_retry(settings.fetch_queue_name, request.model_dump_json())
 
     async def dequeue_fetch(self, timeout: float = 1.0) -> FetchRequest | None:
-        try:
-            client = await self._get_client()
-            item = await client.brpop(settings.fetch_queue_name, timeout=int(max(1, timeout)))
-            if item:
-                _, payload = item
-                return FetchRequest.model_validate_json(payload)
-            return None
-        except (aioredis.TimeoutError, aioredis.ConnectionError):
-            return None
+        payload = await self._dequeue_with_fallback(settings.fetch_queue_name, timeout)
+        return FetchRequest.model_validate_json(payload) if payload else None
 
     async def enqueue_raw(self, record: RawPageRecord) -> None:
-        client = await self._get_client()
-        await client.lpush(settings.staging_queue_name, record.model_dump_json())
+        await self._enqueue_with_retry(settings.staging_queue_name, record.model_dump_json())
 
     async def dequeue_raw(self, timeout: float = 1.0) -> RawPageRecord | None:
-        try:
-            client = await self._get_client()
-            item = await client.brpop(settings.staging_queue_name, timeout=int(max(1, timeout)))
-            if item:
-                _, payload = item
-                return RawPageRecord.model_validate_json(payload)
-            return None
-        except (aioredis.TimeoutError, aioredis.ConnectionError):
-            return None
+        payload = await self._dequeue_with_fallback(settings.staging_queue_name, timeout)
+        return RawPageRecord.model_validate_json(payload) if payload else None
 
     async def enqueue_document(self, doc: CleanDocument) -> None:
-        client = await self._get_client()
-        await client.lpush(settings.index_queue_name, doc.model_dump_json())
+        await self._enqueue_with_retry(settings.index_queue_name, doc.model_dump_json())
 
     async def dequeue_document(self, timeout: float = 1.0) -> CleanDocument | None:
-        try:
-            client = await self._get_client()
-            item = await client.brpop(settings.index_queue_name, timeout=int(max(1, timeout)))
-            if item:
-                _, payload = item
-                return CleanDocument.model_validate_json(payload)
-            return None
-        except (aioredis.TimeoutError, aioredis.ConnectionError):
-            return None
+        payload = await self._dequeue_with_fallback(settings.index_queue_name, timeout)
+        return CleanDocument.model_validate_json(payload) if payload else None
 
     async def route_to_dlq(self, failed: FailedFetchRecord) -> None:
-        client = await self._get_client()
-        await client.lpush(settings.dlq_name, failed.model_dump_json())
+        await self._enqueue_with_retry(settings.dlq_name, failed.model_dump_json())
 
     async def get_queue_depths(self) -> dict[str, int]:
-        client = await self._get_client()
-        fetch_len = await client.llen(settings.fetch_queue_name)
-        staging_len = await client.llen(settings.staging_queue_name)
-        index_len = await client.llen(settings.index_queue_name)
-        dlq_len = await client.llen(settings.dlq_name)
-        return {
-            "fetch": fetch_len,
-            "staging": staging_len,
-            "index": index_len,
-            "dlq": dlq_len,
-        }
+        try:
+            client = await self._get_client()
+            fetch_len = await client.llen(settings.fetch_queue_name)
+            staging_len = await client.llen(settings.staging_queue_name)
+            index_len = await client.llen(settings.index_queue_name)
+            dlq_len = await client.llen(settings.dlq_name)
+            return {
+                "fetch": fetch_len,
+                "staging": staging_len,
+                "index": index_len,
+                "dlq": dlq_len,
+            }
+        except (aioredis.TimeoutError, aioredis.ConnectionError, Exception) as exc:
+            logger.warning("Failed to query Redis queue depths: %s", exc)
+            await self._reset_client()
+            return {
+                "fetch": 0,
+                "staging": 0,
+                "index": 0,
+                "dlq": 0,
+            }
 
     async def close(self) -> None:
-        if self.redis:
-            await self.redis.aclose()
-            self.redis = None
+        await self._reset_client()
