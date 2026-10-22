@@ -1,3 +1,4 @@
+from services.common.citations import CitationFormatter
 from services.common.config import settings
 from services.common.hashing import compute_sha256, compute_simhash, simhash_hamming_distance
 from services.common.models import (
@@ -10,6 +11,7 @@ from services.common.models import (
 )
 
 __all__ = [
+    "CitationFormatter",
     "CleanDocument",
     "FailedFetchRecord",
     "FetchRequest",
