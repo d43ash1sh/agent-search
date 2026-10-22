@@ -7,3 +7,4 @@ class DocumentItem(TypedDict):
     title: str
     text: str
     blocks: NotRequired[list[str]]
+    markdown: NotRequired[str]

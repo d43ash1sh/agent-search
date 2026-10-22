@@ -181,6 +181,50 @@ def _stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reclean(args: argparse.Namespace) -> int:
+    import sqlite3
+
+    from crawler.cleaning import clean_legacy_text
+    from crawler.pipelines import _passage_records
+
+    database_path = Path(args.database).expanduser()
+    if not database_path.exists():
+        print(f"Database not found: {database_path}", file=sys.stderr)
+        return 1
+
+    conn = sqlite3.connect(database_path)
+    try:
+        rows = conn.execute("SELECT url, canonical_url, title, text FROM documents").fetchall()
+        print(f"Sanitizing {len(rows)} documents in {database_path}...")
+        updated = 0
+        for url, _canonical_url, _title, raw_text in rows:
+            clean_text = clean_legacy_text(raw_text)
+            if not clean_text:
+                continue
+
+            conn.execute("UPDATE documents SET text = ? WHERE url = ?", (clean_text, url))
+            passage_records = _passage_records(url, clean_text)
+            conn.execute("DELETE FROM passages WHERE document_url = ?", (url,))
+            conn.executemany(
+                """
+                INSERT INTO passages(
+                    document_url, ordinal, text, evidence_id, start_offset, end_offset
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (url, ordinal, passage, evidence_id, start, end)
+                    for ordinal, (passage, evidence_id, start, end) in enumerate(passage_records)
+                ],
+            )
+            updated += 1
+
+        conn.commit()
+        print(f"Successfully cleaned and re-indexed {updated} documents.")
+        return 0
+    finally:
+        conn.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Crawl allowed sites into a local SQLite FTS5 index.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -283,6 +327,12 @@ def main() -> int:
     stats_parser = subparsers.add_parser("stats", help="display search index statistics")
     stats_parser.add_argument("--database", default="data/crawler.sqlite3")
     stats_parser.set_defaults(handler=_stats)
+
+    reclean_parser = subparsers.add_parser(
+        "reclean", help="sanitize and clean legacy scraped content in SQLite"
+    )
+    reclean_parser.add_argument("--database", default="data/crawler.sqlite3")
+    reclean_parser.set_defaults(handler=_reclean)
 
     args = parser.parse_args()
     if args.command == "crawl":

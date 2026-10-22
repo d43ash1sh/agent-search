@@ -32,7 +32,7 @@ class SiteSpiderTests(unittest.TestCase):
         document = documents[0]
 
         self.assertEqual(document["title"], "Example page")
-        self.assertEqual(document["text"], "Useful page text Nested list item text")
+        self.assertEqual(document["text"], "Useful page text\n\nNested list item text")
         self.assertEqual(document.get("blocks"), ["Useful page text", "Nested list item text"])
         self.assertEqual(document["canonical_url"], "https://example.com/canonical")
         self.assertEqual([request.url for request in requests], ["https://example.com/next"])

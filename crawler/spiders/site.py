@@ -8,6 +8,7 @@ import scrapy
 from scrapy.http import HtmlResponse, Request, Response, TextResponse
 from scrapy.linkextractors import LinkExtractor
 
+from crawler.cleaning import extract_clean_markdown
 from crawler.items import DocumentItem
 from crawler.urls import host_is_allowed, normalize_url
 
@@ -127,45 +128,55 @@ class SiteSpider(scrapy.Spider):
 
         self.domain_counts[domain] += 1
 
-        title = " ".join(response.css("title::text").getall()).strip()
-        block_selector = (
-            "//body//*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 "
-            "or self::h6 or self::p or self::li or self::blockquote or self::pre "
-            "or self::td or self::th or self::dt or self::dd or self::figcaption]"
-            "[not(ancestor::script or ancestor::style or ancestor::noscript "
-            "or ancestor::svg or ancestor::nav or ancestor::footer or ancestor::header)]"
-            "[not(ancestor::*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 "
-            "or self::h6 or self::p or self::li or self::blockquote or self::pre "
-            "or self::td or self::th or self::dt or self::dd or self::figcaption])]"
-        )
-        blocks = list(
-            dict.fromkeys(
-                " ".join(" ".join(block.xpath(".//text()").getall()).split())
-                for block in response.xpath(block_selector)
-                if block.xpath(".//text()").getall()
-            )
-        )
-        text = " ".join(blocks)
-        if not text:
-            text = " ".join(
-                " ".join(
-                    response.xpath(
-                        "//body//text()[not(ancestor::script or ancestor::style "
-                        "or ancestor::noscript or ancestor::svg or ancestor::nav "
-                        "or ancestor::footer or ancestor::header)]"
-                    ).getall()
-                ).split()
-            )
         canonical_href = response.css('link[rel~="canonical"]::attr(href)').get()
         canonical_url = normalize_url(urljoin(response.url, canonical_href)) if canonical_href else page_url
         if not canonical_url:
             canonical_url = page_url
+
+        extracted = extract_clean_markdown(response.text, page_url)
+        if extracted and extracted.get("text"):
+            title = extracted.get("title") or " ".join(response.css("title::text").getall()).strip()
+            text = extracted["text"]
+            blocks = extracted.get("blocks") or [text]
+            markdown = extracted.get("markdown", text)
+        else:
+            title = " ".join(response.css("title::text").getall()).strip()
+            block_selector = (
+                "//body//*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 "
+                "or self::h6 or self::p or self::li or self::blockquote or self::pre "
+                "or self::td or self::th or self::dt or self::dd or self::figcaption]"
+                "[not(ancestor::script or ancestor::style or ancestor::noscript "
+                "or ancestor::svg or ancestor::nav or ancestor::footer or ancestor::header)]"
+                "[not(ancestor::*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 "
+                "or self::h6 or self::p or self::li or self::blockquote or self::pre "
+                "or self::td or self::th or self::dt or self::dd or self::figcaption])]"
+            )
+            blocks = list(
+                dict.fromkeys(
+                    " ".join(" ".join(block.xpath(".//text()").getall()).split())
+                    for block in response.xpath(block_selector)
+                    if block.xpath(".//text()").getall()
+                )
+            )
+            text = "\n\n".join(blocks) if blocks else ""
+            if not text:
+                text = " ".join(
+                    " ".join(
+                        response.xpath(
+                            "//body//text()[not(ancestor::script or ancestor::style "
+                            "or ancestor::noscript or ancestor::svg or ancestor::nav "
+                            "or ancestor::footer or ancestor::header)]"
+                        ).getall()
+                    ).split()
+                )
+            markdown = text
 
         yield {
             "url": page_url,
             "canonical_url": canonical_url,
             "title": title,
             "text": text,
+            "markdown": markdown,
             "blocks": blocks,
         }
 

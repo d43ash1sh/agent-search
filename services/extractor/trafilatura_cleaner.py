@@ -5,6 +5,8 @@ from typing import Any
 
 import trafilatura
 
+from crawler.cleaning import sanitize_markdown
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ class TrafilaturaCleaner:
                 return None
 
             # Extract markdown formatted text for LLM readability
-            markdown = (
+            raw_markdown = (
                 trafilatura.extract(
                     raw_html,
                     url=url,
@@ -58,6 +60,7 @@ class TrafilaturaCleaner:
                 )
                 or text
             )
+            markdown = sanitize_markdown(raw_markdown)
 
             return {
                 "title": title,
@@ -66,7 +69,7 @@ class TrafilaturaCleaner:
                 "sitename": sitename,
                 "description": description,
                 "clean_text": text,
-                "markdown": markdown.strip(),
+                "markdown": markdown,
             }
         except Exception as error:
             logger.warning("Trafilatura extraction failed for %s: %s", url, error)

@@ -40,6 +40,8 @@ class SQLitePipeline:
             self.connection.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
         if "changed_at" not in columns:
             self.connection.execute("ALTER TABLE documents ADD COLUMN changed_at TEXT NOT NULL DEFAULT ''")
+        if "markdown" not in columns:
+            self.connection.execute("ALTER TABLE documents ADD COLUMN markdown TEXT NOT NULL DEFAULT ''")
         rows: list[tuple[str]] = self.connection.execute(
             "SELECT url FROM documents WHERE domain = ''"
         ).fetchall()
@@ -164,9 +166,21 @@ class SQLitePipeline:
         if self.connection is None:
             raise RuntimeError("SQLite pipeline was used before it was opened")
 
-        chunks = _clean_blocks(item.get("blocks") or [item["text"]])
-        text = " ".join(chunks)
-        passage_records = _passage_records(item["url"], text)
+        if item.get("markdown"):
+            text = item["markdown"]
+            markdown_content = item["markdown"]
+            blocks = item.get("blocks") or [b.strip() for b in text.split("\n\n") if b.strip()]
+        elif "\n\n" in item.get("text", ""):
+            text = item["text"]
+            markdown_content = item["text"]
+            blocks = item.get("blocks") or [b.strip() for b in text.split("\n\n") if b.strip()]
+        else:
+            chunks = _clean_blocks(item.get("blocks") or [item["text"]])
+            text = " ".join(chunks)
+            markdown_content = text
+            blocks = chunks
+
+        passage_records = _passage_records(item["url"], text, blocks)
         content_hash = hashlib.sha256(
             "\0".join((item["canonical_url"], item["title"], text)).encode("utf-8")
         ).hexdigest()
@@ -174,13 +188,14 @@ class SQLitePipeline:
         self.connection.execute(
             """
             INSERT INTO documents(
-                url, canonical_url, title, text, domain, content_hash, changed_at, fetched_at
+                url, canonical_url, title, text, markdown, domain, content_hash, changed_at, fetched_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(url) DO UPDATE SET
                 canonical_url = excluded.canonical_url,
                 title = excluded.title,
                 text = excluded.text,
+                markdown = excluded.markdown,
                 domain = excluded.domain,
                 changed_at = CASE
                     WHEN documents.content_hash != excluded.content_hash THEN CURRENT_TIMESTAMP
@@ -189,7 +204,7 @@ class SQLitePipeline:
                 content_hash = excluded.content_hash,
                 fetched_at = CURRENT_TIMESTAMP
             """,
-            (item["url"], item["canonical_url"], item["title"], text, domain, content_hash),
+            (item["url"], item["canonical_url"], item["title"], text, markdown_content, domain, content_hash),
         )
         self.connection.execute("DELETE FROM passages WHERE document_url = ?", (item["url"],))
         self.connection.executemany(
@@ -214,24 +229,61 @@ class SQLitePipeline:
 
 def _make_passages(chunks: list[str], max_chars: int = 1200) -> list[str]:
     passages: list[str] = []
-    current = ""
+    current: list[str] = []
+    current_len = 0
+
+    is_markdown = any("\n" in c for c in chunks)
+    sep = "\n\n" if is_markdown else " "
+
     for chunk in chunks:
-        while len(chunk) > max_chars:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+
+        if len(chunk) > max_chars:
             if current:
-                passages.append(current)
-                current = ""
-            boundary = chunk.rfind(" ", 0, max_chars + 1)
-            boundary = boundary if boundary > 0 else max_chars
-            passages.append(chunk[:boundary].strip())
-            chunk = chunk[boundary:].strip()
-        candidate = f"{current} {chunk}".strip()
-        if current and len(candidate) > max_chars:
-            passages.append(current)
-            current = chunk
+                passages.append(sep.join(current))
+                current = []
+                current_len = 0
+
+            if "\n" in chunk:
+                lines = chunk.splitlines()
+                sub_current: list[str] = []
+                sub_len = 0
+                for line in lines:
+                    line_len = len(line)
+                    if sub_current and (sub_len + line_len + 1 > max_chars):
+                        passages.append("\n".join(sub_current))
+                        sub_current = [line]
+                        sub_len = line_len
+                    else:
+                        sub_current.append(line)
+                        sub_len += line_len + (1 if sub_len else 0)
+                if sub_current:
+                    passages.append("\n".join(sub_current))
+            else:
+                sub_chunk = chunk
+                while len(sub_chunk) > max_chars:
+                    boundary = sub_chunk.rfind(" ", 0, max_chars + 1)
+                    boundary = boundary if boundary > 0 else max_chars
+                    passages.append(sub_chunk[:boundary].strip())
+                    sub_chunk = sub_chunk[boundary:].strip()
+                if sub_chunk:
+                    passages.append(sub_chunk)
+            continue
+
+        chunk_len = len(chunk)
+        if current and (current_len + chunk_len + len(sep) > max_chars):
+            passages.append(sep.join(current))
+            current = [chunk]
+            current_len = chunk_len
         else:
-            current = candidate
+            current.append(chunk)
+            current_len += chunk_len + (len(sep) if current_len else 0)
+
     if current:
-        passages.append(current)
+        passages.append(sep.join(current))
+
     return passages
 
 
@@ -246,15 +298,27 @@ def _clean_blocks(blocks: list[str]) -> list[str]:
     return cleaned
 
 
-def _passage_records(document_url: str, text: str) -> list[tuple[str, str, int, int]]:
+def _passage_records(
+    document_url: str, text: str, blocks: list[str] | None = None
+) -> list[tuple[str, str, int, int]]:
     records: list[tuple[str, str, int, int]] = []
     cursor = 0
-    for passage in _make_passages([text]):
+    chunks_to_use = blocks if (blocks and any("\n" in b for b in blocks)) else [text]
+    for passage in _make_passages(chunks_to_use):
+        passage = passage.strip()
+        if not passage:
+            continue
         start = text.find(passage, cursor)
         if start < 0:
-            raise ValueError("Generated passage cannot be located in its source document")
-        end = start + len(passage)
-        evidence_id = hashlib.sha256("\0".join((document_url, passage)).encode("utf-8")).hexdigest()
+            start = text.find(passage)
+        if start < 0:
+            start = cursor
+            end = min(len(text), cursor + len(passage))
+        else:
+            end = start + len(passage)
+        evidence_id = hashlib.sha256(
+            "\0".join((document_url, str(start), passage)).encode("utf-8")
+        ).hexdigest()
         records.append((passage, evidence_id, start, end))
         cursor = end
     return records
