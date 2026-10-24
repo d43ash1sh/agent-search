@@ -5,6 +5,7 @@ import logging
 from urllib.parse import urljoin, urlsplit
 
 from crawler.urls import host_is_allowed, normalize_url
+from services.cache.redis_cache import AbstractUrlCache, get_url_cache
 from services.common.hashing import compute_sha256, compute_simhash
 from services.common.models import CleanDocument, FetchRequest, RawPageRecord
 from services.extractor.chunker import chunk_document
@@ -28,11 +29,13 @@ class ExtractorWorker:
         broker: AbstractQueueBroker,
         index: AbstractSearchIndex | None = None,
         sqlite_path: str | None = None,
+        cache: AbstractUrlCache | None = None,
     ) -> None:
         self.broker = broker
         self.trafilatura = TrafilaturaCleaner()
         self.fallback = FallbackCleaner()
         self.dedup = DeduplicationFilter()
+        self.cache = cache or get_url_cache()
         if index is not None:
             self.index: AbstractSearchIndex = index
         elif sqlite_path:
@@ -141,9 +144,16 @@ class ExtractorWorker:
             if doc:
                 await self.broker.enqueue_document(doc)
 
+            # Mark current page as seen in Redis cache
+            await self.cache.mark_seen(raw.url)
+
             # Discover all links (both internal within the site and external outlinks)
             internal_links, external_links = self.extract_all_links(raw.raw_html, raw.url)
             current_depth = int(raw.metadata.get("depth", 0)) if raw.metadata else 0
+
+            # Fast Redis check: Filter out already seen URLs before queuing
+            all_links = internal_links + external_links
+            unseen_links = set(await self.cache.filter_unseen_urls(all_links))
 
             # Store discovered URLs in the persistent frontier ledger
             frontier_records = [
@@ -170,6 +180,8 @@ class ExtractorWorker:
                 # 1. Enqueue internal child links within allowed depth
                 if current_depth < max_depth:
                     for link in internal_links:
+                        if link not in unseen_links:
+                            continue
                         if allowed_domain and not host_is_allowed(link, [allowed_domain]):
                             continue
                         child_meta = dict(raw.metadata)
@@ -182,12 +194,15 @@ class ExtractorWorker:
                                 metadata=child_meta,
                             )
                         )
+                        await self.cache.mark_seen(link)
                         await self.index.update_frontier_status(link, "queued")
 
                 # 2. Enqueue external outlinks if cross-site broad crawling is requested
                 if follow_external and current_depth < max_external_depth:
                     domain_counts: dict[str, int] = {}
                     for link in external_links:
+                        if link not in unseen_links:
+                            continue
                         target_domain = (urlsplit(link).hostname or "").lower()
                         # Limit to max 5 external links per domain per page to maintain broad diversity
                         if domain_counts.get(target_domain, 0) >= 5:
@@ -205,6 +220,7 @@ class ExtractorWorker:
                                 metadata=ext_meta,
                             )
                         )
+                        await self.cache.mark_seen(link)
                         await self.index.update_frontier_status(link, "queued")
 
             return True

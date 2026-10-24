@@ -73,6 +73,7 @@ async def main() -> None:
         extractor.is_running = False
         indexer.is_running = False
         await fetcher.close()
+        await extractor.cache.close()
         logger.info("All services shut down cleanly.")
 
 

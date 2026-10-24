@@ -20,6 +20,10 @@ ITEM_PIPELINES = {
     "crawler.pipelines.SQLitePipeline": 300,
 }
 
+# ── Redis Deduplication Filter ───────────────────────────────────────────────
+DUPEFILTER_CLASS = "crawler.dupefilter.RedisDupeFilter"
+REDIS_URL = "redis://127.0.0.1:6379/0"
+
 # ── Broad Crawl Concurrency Settings ──────────────────────────────────────────
 # Scaled for 500-1000 domains: high global concurrency with polite per-domain limits
 CONCURRENT_REQUESTS = 64

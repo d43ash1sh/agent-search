@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from crawler.pipelines import SQLitePipeline
 from services.api.routes import create_api_router
+from services.cache.redis_cache import InMemoryUrlCache
 from services.common.models import RawPageRecord
 from services.extractor.worker import ExtractorWorker
 from services.indexer.sqlite_index import SQLiteSearchIndex
@@ -93,7 +94,8 @@ async def test_extractor_worker_cross_site_crawling() -> None:
         os.remove(db_path)
 
     broker = InMemoryQueueBroker()
-    worker = ExtractorWorker(broker=broker, sqlite_path=db_path)
+    cache = InMemoryUrlCache()
+    worker = ExtractorWorker(broker=broker, sqlite_path=db_path, cache=cache)
 
     raw_html = """
     <html>

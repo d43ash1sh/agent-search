@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from services.api.dashboard import DASHBOARD_HTML
+from services.cache.redis_cache import AbstractUrlCache, get_url_cache
 from services.common.citations import CitationFormatter
 from services.common.models import FetchRequest, SearchHit
 from services.indexer.base import AbstractSearchIndex
@@ -117,9 +118,14 @@ class HealthResponse(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -> APIRouter:
+def create_api_router(
+    broker: AbstractQueueBroker,
+    index: AbstractSearchIndex,
+    cache: AbstractUrlCache | None = None,
+) -> APIRouter:
     api = APIRouter()
     reranker = NeuralReranker()
+    url_cache = cache or get_url_cache()
 
     @api.get("/", response_class=HTMLResponse)
     @api.get("/dashboard", response_class=HTMLResponse)
@@ -131,7 +137,8 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
     async def health_check() -> HealthResponse:
         index_ok = await index.ping()
         broker_ok = await broker.ping()
-        overall = "healthy" if (index_ok and broker_ok) else "degraded"
+        cache_ok = await url_cache.ping()
+        overall = "healthy" if (index_ok and broker_ok and cache_ok) else "degraded"
         return HealthResponse(
             status=overall,
             index_status="ok" if index_ok else "unreachable",
@@ -139,6 +146,8 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
             details={
                 "index_backend": getattr(index, "__class__", type(index)).__name__,
                 "broker_backend": getattr(broker, "__class__", type(broker)).__name__,
+                "cache_backend": getattr(url_cache, "__class__", type(url_cache)).__name__,
+                "cache_status": "ok" if cache_ok else "unreachable",
             },
         )
 
@@ -350,5 +359,14 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
     @api.get("/v1/stats")
     async def get_stats() -> dict[str, Any]:
         return await index.get_stats()
+
+    @api.get("/v1/cache/stats")
+    async def get_cache_stats() -> dict[str, Any]:
+        return await url_cache.get_cache_stats()
+
+    @api.post("/v1/cache/clear")
+    async def clear_cache() -> dict[str, Any]:
+        await url_cache.clear_cache()
+        return {"status": "ok", "message": "Crawler URL and page cache cleared"}
 
     return api

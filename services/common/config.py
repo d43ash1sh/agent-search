@@ -13,6 +13,17 @@ class ServiceSettings(BaseModel):
     index_queue_name: str = Field(default_factory=lambda: os.getenv("INDEX_QUEUE_NAME", "queue:index"))
     dlq_name: str = Field(default_factory=lambda: os.getenv("DLQ_NAME", "queue:dead_letter"))
 
+    # Redis URL Cache settings
+    enable_redis_cache: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_REDIS_CACHE", "true").lower() in ("true", "1")
+    )
+    page_cache_ttl_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("PAGE_CACHE_TTL_SECONDS", "86400"))
+    )
+    crawler_lock_ttl_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("CRAWLER_LOCK_TTL_SECONDS", "60"))
+    )
+
     # Fetcher settings
     max_connections: int = Field(default_factory=lambda: int(os.getenv("MAX_CONNECTIONS", "100")))
     max_keepalive: int = Field(default_factory=lambda: int(os.getenv("MAX_KEEPALIVE", "20")))

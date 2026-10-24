@@ -8,6 +8,7 @@ import redis
 from fastapi import FastAPI
 
 from services.api.routes import create_api_router
+from services.cache.redis_cache import get_url_cache
 from services.common.config import settings
 from services.indexer.factory import create_search_index
 from services.queue.base import AbstractQueueBroker
@@ -30,6 +31,7 @@ def _init_broker() -> AbstractQueueBroker:
 
 broker = _init_broker()
 index = create_search_index()
+cache = get_url_cache()
 
 
 @asynccontextmanager
@@ -45,6 +47,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await broker.close()
     except Exception as exc:
         logger.warning("Error closing broker during shutdown: %s", exc)
+    try:
+        await cache.close()
+    except Exception as exc:
+        logger.warning("Error closing URL cache during shutdown: %s", exc)
 
 
 app = FastAPI(
@@ -54,5 +60,5 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-api_router = create_api_router(broker, index)
+api_router = create_api_router(broker, index, cache=cache)
 app.include_router(api_router)
