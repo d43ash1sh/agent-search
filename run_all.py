@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import logging
+import sys
 
 import redis
 import uvicorn
 
 from services.api.server import app, index
 from services.common.config import settings
+from services.common.docker_manager import (
+    ensure_infrastructure_online,
+    is_docker_available,
+    stop_docker_containers,
+)
 from services.extractor.worker import ExtractorWorker
 from services.fetcher.worker import FetcherWorker
 from services.indexer.worker import IndexerWorker
@@ -23,24 +30,69 @@ logging.basicConfig(
 logger = logging.getLogger("agent-search")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run Agent Search distributed services (API, Fetcher, Extractor, Indexer) with auto-Docker infrastructure."
+    )
+    parser.add_argument(
+        "--no-docker",
+        action="store_true",
+        help="Skip automatic Docker infrastructure check/startup (for containerized or external setups).",
+    )
+    parser.add_argument(
+        "--docker-only",
+        action="store_true",
+        help="Only ensure Docker infrastructure (PostgreSQL & Redis) is running and healthy, then exit.",
+    )
+    parser.add_argument(
+        "--stop-docker",
+        action="store_true",
+        help="Stop running Docker compose containers and exit.",
+    )
+    parser.add_argument(
+        "--down-on-exit",
+        action="store_true",
+        help="Automatically stop Docker compose containers when run_all.py is terminated.",
+    )
+    return parser.parse_args()
+
+
 async def main() -> None:
-    # Detect broker (Redis or in-memory fallback)
+    args = parse_args()
+
+    # Handle --stop-docker command
+    if args.stop_docker:
+        logger.info("Stopping Docker infrastructure...")
+        success = stop_docker_containers()
+        sys.exit(0 if success else 1)
+
+    # 1. Automatic Docker & Infrastructure Management
+    auto_start = not args.no_docker
+    logger.info("Checking infrastructure dependencies (Docker available: %s)...", is_docker_available())
+    infra_status = ensure_infrastructure_online(auto_start_docker=auto_start)
+    logger.info("Infrastructure status: %s", infra_status)
+
+    if args.docker_only:
+        logger.info("Docker infrastructure check complete. Exiting (--docker-only requested).")
+        return
+
+    # 2. Detect broker (Redis or in-memory fallback)
     active_broker: AbstractQueueBroker
     try:
         r = redis.from_url(settings.redis_url, socket_timeout=2.0)
         r.ping()
-        logger.info("Connected to Redis at %s", settings.redis_url)
+        logger.info("Connected to Redis broker at %s", settings.redis_url)
         active_broker = RedisQueueBroker(settings.redis_url)
-    except Exception:
-        logger.warning("Redis not reachable; using in-process InMemoryQueueBroker")
+    except Exception as exc:
+        logger.warning("Redis broker not reachable (%s); falling back to InMemoryQueueBroker", exc)
         active_broker = InMemoryQueueBroker()
 
-    # Initialize workers
+    # 3. Initialize workers
     fetcher = FetcherWorker(broker=active_broker)
     extractor = ExtractorWorker(broker=active_broker, index=index)
     indexer = IndexerWorker(broker=active_broker, index=index)
 
-    # Configure uvicorn API server
+    # 4. Configure uvicorn API server
     config = uvicorn.Config(
         app=app,
         host=settings.api_host,
@@ -51,14 +103,16 @@ async def main() -> None:
 
     logger.info("==================================================================")
     logger.info(" Agent Search Engine: All services starting up...")
+    logger.info("   - Storage Backend:   %s", settings.index_backend.upper())
+    logger.info("   - Queue Broker:      %s", active_broker.__class__.__name__)
     logger.info("   - Fetcher Service:   ACTIVE (httpx + Playwright fallback)")
-    logger.info("   - Extractor Service: ACTIVE (Trafilatura + SimHash)")
-    logger.info("   - Indexer Service:   ACTIVE (SQLite FTS5 + Neural Reranker)")
+    logger.info("   - Extractor Service: ACTIVE (Trafilatura + SimHash + URL Frontier)")
+    logger.info("   - Indexer Service:   ACTIVE (Hybrid pgvector / FTS5 + Neural Reranker)")
     logger.info("   - API Service:       ACTIVE (http://%s:%d)", settings.api_host, settings.api_port)
     logger.info("   - Interactive Docs:  http://localhost:%d/docs", settings.api_port)
     logger.info("==================================================================")
 
-    # Run all workers and the web server concurrently
+    # 5. Run all workers and the web server concurrently
     try:
         await asyncio.gather(
             server.serve(),
@@ -75,6 +129,10 @@ async def main() -> None:
         await fetcher.close()
         await extractor.cache.close()
         logger.info("All services shut down cleanly.")
+
+        if args.down_on_exit:
+            logger.info("Stopping Docker infrastructure (--down-on-exit requested)...")
+            stop_docker_containers()
 
 
 if __name__ == "__main__":

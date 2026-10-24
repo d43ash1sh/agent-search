@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -35,6 +33,29 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - agent-search-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-search-app
+    restart: unless-stopped
+    command: ["python", "run_all.py", "--no-docker"]
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/agent_search
+      - REDIS_URL=redis://redis:6379/0
+      - INDEX_BACKEND=postgres
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - agent-search-net
 
