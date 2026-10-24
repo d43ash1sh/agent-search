@@ -39,3 +39,11 @@ class AbstractQueueBroker(ABC):
     @abstractmethod
     async def get_queue_depths(self) -> dict[str, int]:
         """Return counts of queued items in all stages."""
+
+    async def ping(self) -> bool:
+        """Check connectivity to broker."""
+        return True
+
+    async def close(self) -> None:
+        """Close connections to broker."""
+        return None

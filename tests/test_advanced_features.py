@@ -130,6 +130,15 @@ class TestAdvancedAgentFeatures:
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://testserver"
                 ) as client:
+                    # Test /v1/health and /healthz
+                    health_resp = await client.get("/v1/health")
+                    assert health_resp.status_code == 200
+                    health_data = health_resp.json()
+                    assert health_data["status"] == "healthy"
+                    assert health_data["index_status"] == "ok"
+                    assert health_data["broker_status"] == "ok"
+                    assert "index_backend" in health_data["details"]
+
                     # Test /v1/search/grounded
                     grounded_resp = await client.post(
                         "/v1/search/grounded",
@@ -166,4 +175,4 @@ class TestAdvancedAgentFeatures:
                     assert crawl_data["allowed_domain"] == "docs.example.com"
                     assert "event: done" in body
             finally:
-                index.close()
+                await index.close()

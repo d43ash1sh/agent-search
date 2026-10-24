@@ -126,16 +126,16 @@ class SQLiteSearchIndex(AbstractSearchIndex):
     async def get_stats(self) -> dict[str, Any]:
         return self._service.get_stats()
 
-    def record_frontier_urls(self, records: list[dict[str, Any]]) -> int:
+    async def record_frontier_urls(self, records: list[dict[str, Any]]) -> int:
         return self._pipeline.record_frontier_urls(records)
 
-    def update_frontier_status(self, url: str, status: str) -> None:
+    async def update_frontier_status(self, url: str, status: str) -> None:
         self._pipeline.update_frontier_status(url, status)
 
-    def get_frontier_stats(self) -> dict[str, Any]:
+    async def get_frontier_stats(self) -> dict[str, Any]:
         return self._pipeline.get_frontier_stats()
 
-    def get_frontier_urls(
+    async def get_frontier_urls(
         self,
         status: str | None = None,
         domain: str | None = None,
@@ -143,9 +143,26 @@ class SQLiteSearchIndex(AbstractSearchIndex):
     ) -> list[dict[str, Any]]:
         return self._pipeline.get_frontier_urls(status=status, domain=domain, limit=limit)
 
-    def get_pending_frontier_urls(self, limit: int = 50, max_per_domain: int = 10) -> list[dict[str, Any]]:
+    async def get_pending_frontier_urls(
+        self, limit: int = 50, max_per_domain: int = 10
+    ) -> list[dict[str, Any]]:
         return self._pipeline.get_pending_frontier_urls(limit=limit, max_per_domain=max_per_domain)
 
-    def close(self) -> None:
+    async def ping(self) -> bool:
+        """Check SQLite connectivity."""
+        try:
+            if self._pipeline.connection is None:
+                self._pipeline.open_spider()
+            conn = self._pipeline.connection
+            if conn is None:
+                return False
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            row = cur.fetchone()
+            return bool(row is not None and row[0] == 1)
+        except Exception:
+            return False
+
+    async def close(self) -> None:
         if self._pipeline.connection:
             self._pipeline.close_spider()

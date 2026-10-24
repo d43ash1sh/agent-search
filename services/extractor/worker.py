@@ -4,15 +4,16 @@ import asyncio
 import logging
 from urllib.parse import urljoin, urlsplit
 
-from crawler.pipelines import SQLitePipeline
 from crawler.urls import host_is_allowed, normalize_url
-from services.common.config import settings
 from services.common.hashing import compute_sha256, compute_simhash
 from services.common.models import CleanDocument, FetchRequest, RawPageRecord
 from services.extractor.chunker import chunk_document
 from services.extractor.dedup_filter import DeduplicationFilter
 from services.extractor.fallback_cleaner import FallbackCleaner
 from services.extractor.trafilatura_cleaner import TrafilaturaCleaner
+from services.indexer.base import AbstractSearchIndex
+from services.indexer.factory import create_search_index
+from services.indexer.sqlite_index import SQLiteSearchIndex
 from services.queue.base import AbstractQueueBroker
 from services.queue.redis_broker import RedisQueueBroker
 
@@ -22,13 +23,22 @@ logger = logging.getLogger(__name__)
 class ExtractorWorker:
     """CPU-bound worker that extracts, chunks, deduplicates, and manages the URL frontier."""
 
-    def __init__(self, broker: AbstractQueueBroker, sqlite_path: str | None = None) -> None:
+    def __init__(
+        self,
+        broker: AbstractQueueBroker,
+        index: AbstractSearchIndex | None = None,
+        sqlite_path: str | None = None,
+    ) -> None:
         self.broker = broker
         self.trafilatura = TrafilaturaCleaner()
         self.fallback = FallbackCleaner()
         self.dedup = DeduplicationFilter()
-        self.pipeline = SQLitePipeline(sqlite_path or settings.sqlite_path)
-        self.pipeline.open_spider()
+        if index is not None:
+            self.index: AbstractSearchIndex = index
+        elif sqlite_path:
+            self.index = SQLiteSearchIndex(sqlite_path)
+        else:
+            self.index = create_search_index()
         self.is_running = False
 
     @staticmethod
@@ -135,7 +145,7 @@ class ExtractorWorker:
             internal_links, external_links = self.extract_all_links(raw.raw_html, raw.url)
             current_depth = int(raw.metadata.get("depth", 0)) if raw.metadata else 0
 
-            # Store discovered URLs in the persistent SQLite frontier ledger
+            # Store discovered URLs in the persistent frontier ledger
             frontier_records = [
                 {
                     "url": link,
@@ -147,7 +157,7 @@ class ExtractorWorker:
                 for link in (internal_links + external_links)
             ]
             if frontier_records:
-                self.pipeline.record_frontier_urls(frontier_records)
+                await self.index.record_frontier_urls(frontier_records)
 
             # Recursive crawling link extraction & queueing
             if raw.metadata and raw.metadata.get("recursive"):
@@ -172,7 +182,7 @@ class ExtractorWorker:
                                 metadata=child_meta,
                             )
                         )
-                        self.pipeline.update_frontier_status(link, "queued")
+                        await self.index.update_frontier_status(link, "queued")
 
                 # 2. Enqueue external outlinks if cross-site broad crawling is requested
                 if follow_external and current_depth < max_external_depth:
@@ -195,7 +205,7 @@ class ExtractorWorker:
                                 metadata=ext_meta,
                             )
                         )
-                        self.pipeline.update_frontier_status(link, "queued")
+                        await self.index.update_frontier_status(link, "queued")
 
             return True
         except Exception as error:
@@ -211,10 +221,12 @@ class ExtractorWorker:
             if not processed:
                 await asyncio.sleep(0.1)
 
+    async def close(self) -> None:
+        self.is_running = False
+        await self.index.close()
+
     def stop(self) -> None:
         self.is_running = False
-        if self.pipeline.connection:
-            self.pipeline.close_spider()
 
 
 def main() -> None:

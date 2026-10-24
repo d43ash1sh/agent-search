@@ -67,6 +67,10 @@ disallow_untyped_defs = true
 module = [
     "scrapy.*",
     "w3lib.*",
+    "asyncpg.*",
+    "pgvector.*",
+    "fastembed.*",
+    "flashrank.*",
 ]
 ignore_missing_imports = true
 

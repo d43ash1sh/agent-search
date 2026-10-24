@@ -13,6 +13,7 @@ class TestSemanticEmbedder(unittest.TestCase):
     def test_embed_query_and_passages(self) -> None:
         query_vec = self.embedder.embed_query("playwright browser automation")
         self.assertIsNotNone(query_vec)
+        assert query_vec is not None
         self.assertIsInstance(query_vec, np.ndarray)
         self.assertEqual(len(query_vec.shape), 1)
 

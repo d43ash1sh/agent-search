@@ -18,7 +18,7 @@ class NeuralReranker:
     def _get_ranker(self) -> Any:
         if self._ranker is None:
             try:
-                from flashrank import Ranker  # type: ignore[import-untyped]
+                from flashrank import Ranker
 
                 self._ranker = Ranker(model_name=self.model_name)
             except Exception as error:

@@ -37,7 +37,7 @@ async def main() -> None:
 
     # Initialize workers
     fetcher = FetcherWorker(broker=active_broker)
-    extractor = ExtractorWorker(broker=active_broker)
+    extractor = ExtractorWorker(broker=active_broker, index=index)
     indexer = IndexerWorker(broker=active_broker, index=index)
 
     # Configure uvicorn API server

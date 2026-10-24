@@ -118,5 +118,13 @@ class RedisQueueBroker(AbstractQueueBroker):
                 "dlq": 0,
             }
 
+    async def ping(self) -> bool:
+        try:
+            client = await self._get_client()
+            return bool(await client.ping())
+        except Exception as exc:
+            logger.warning("Redis ping failed: %s", exc)
+            return False
+
     async def close(self) -> None:
         await self._reset_client()

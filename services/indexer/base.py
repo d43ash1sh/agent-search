@@ -32,19 +32,19 @@ class AbstractSearchIndex(ABC):
     async def get_stats(self) -> dict[str, Any]:
         """Return index health metrics and document counts."""
 
-    def record_frontier_urls(self, records: list[dict[str, Any]]) -> int:
+    async def record_frontier_urls(self, records: list[dict[str, Any]]) -> int:
         """Record newly discovered URLs into the frontier ledger."""
         return 0
 
-    def update_frontier_status(self, url: str, status: str) -> None:
+    async def update_frontier_status(self, url: str, status: str) -> None:
         """Update crawl status of a URL in the frontier ledger."""
         return None
 
-    def get_frontier_stats(self) -> dict[str, Any]:
+    async def get_frontier_stats(self) -> dict[str, Any]:
         """Return summary metrics for the URL frontier ledger."""
         return {}
 
-    def get_frontier_urls(
+    async def get_frontier_urls(
         self,
         status: str | None = None,
         domain: str | None = None,
@@ -53,6 +53,16 @@ class AbstractSearchIndex(ABC):
         """Retrieve recorded URLs from the frontier ledger."""
         return []
 
-    def get_pending_frontier_urls(self, limit: int = 50, max_per_domain: int = 10) -> list[dict[str, Any]]:
+    async def get_pending_frontier_urls(
+        self, limit: int = 50, max_per_domain: int = 10
+    ) -> list[dict[str, Any]]:
         """Retrieve pending discovered URLs partitioned by domain."""
         return []
+
+    async def ping(self) -> bool:
+        """Check connectivity to storage backend."""
+        return True
+
+    async def close(self) -> None:
+        """Close connection pools and storage resources."""
+        return None

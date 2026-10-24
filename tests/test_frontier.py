@@ -112,8 +112,8 @@ async def test_extractor_worker_cross_site_crawling() -> None:
         status_code=200,
         headers={},
         raw_html=raw_html,
-        fetch_duration=0.1,
-        fetcher_type="httpx",
+        elapsed_seconds=0.1,
+        fetcher_engine="httpx",
         metadata={
             "recursive": True,
             "depth": 0,
@@ -129,7 +129,7 @@ async def test_extractor_worker_cross_site_crawling() -> None:
     assert processed is True
 
     # Check that both internal and external links were recorded in frontier
-    stats = worker.pipeline.get_frontier_stats()
+    stats = await worker.index.get_frontier_stats()
     assert stats["total_discovered"] >= 3
     assert stats["total_domains"] >= 2
 
@@ -146,6 +146,7 @@ async def test_extractor_worker_cross_site_crawling() -> None:
     assert "https://external-tool.org/docs" in fetch_items
 
     worker.stop()
+    await worker.index.close()
     if Path(db_path).exists():
         os.remove(db_path)
 
@@ -158,7 +159,7 @@ async def test_api_frontier_endpoints() -> None:
 
     broker = InMemoryQueueBroker()
     index = SQLiteSearchIndex(db_path)
-    index.record_frontier_urls(
+    await index.record_frontier_urls(
         [
             {"url": "https://outside.org/item1", "domain": "outside.org", "source_url": "https://seed.com"},
             {"url": "https://outside.org/item2", "domain": "outside.org", "source_url": "https://seed.com"},
@@ -194,6 +195,6 @@ async def test_api_frontier_endpoints() -> None:
         assert queued_item is not None
         assert "outside.org" in queued_item.url
 
-    index.close()
+    await index.close()
     if Path(db_path).exists():
         os.remove(db_path)

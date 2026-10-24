@@ -139,7 +139,7 @@ class TestDistributedServices:
                 assert "Separating fetch workers" in hits[0].text
                 assert tokens > 0
             finally:
-                index.close()
+                await index.close()
 
     @pytest.mark.anyio
     async def test_dlq_isolation_on_failure(self) -> None:

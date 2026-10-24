@@ -20,8 +20,8 @@ class PgVectorIndex(AbstractSearchIndex):
 
     async def _init_db(self) -> None:
         try:
-            import asyncpg  # type: ignore[import-not-found]
-            from pgvector.asyncpg import register_vector  # type: ignore[import-not-found]
+            import asyncpg
+            from pgvector.asyncpg import register_vector
 
             if self._pool is None:
                 self._pool = await asyncpg.create_pool(self.postgres_url)

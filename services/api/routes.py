@@ -110,6 +110,13 @@ class ExtractResponse(BaseModel):
     data: list[dict[str, Any]]
 
 
+class HealthResponse(BaseModel):
+    status: str
+    index_status: str
+    broker_status: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -> APIRouter:
     api = APIRouter()
     reranker = NeuralReranker()
@@ -118,6 +125,22 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
     @api.get("/dashboard", response_class=HTMLResponse)
     async def dashboard_page() -> str:
         return DASHBOARD_HTML
+
+    @api.get("/v1/health", response_model=HealthResponse)
+    @api.get("/healthz", response_model=HealthResponse)
+    async def health_check() -> HealthResponse:
+        index_ok = await index.ping()
+        broker_ok = await broker.ping()
+        overall = "healthy" if (index_ok and broker_ok) else "degraded"
+        return HealthResponse(
+            status=overall,
+            index_status="ok" if index_ok else "unreachable",
+            broker_status="ok" if broker_ok else "unreachable",
+            details={
+                "index_backend": getattr(index, "__class__", type(index)).__name__,
+                "broker_backend": getattr(broker, "__class__", type(broker)).__name__,
+            },
+        )
 
     @api.post("/v1/search", response_model=SearchResponse)
     async def search(req: SearchRequest) -> SearchResponse:
@@ -255,7 +278,7 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
 
     @api.get("/v1/frontier/stats", response_model=FrontierStatsResponse)
     async def get_frontier_stats() -> FrontierStatsResponse:
-        stats = index.get_frontier_stats()
+        stats = await index.get_frontier_stats()
         return FrontierStatsResponse(
             total_discovered=stats.get("total_discovered", 0),
             total_domains=stats.get("total_domains", 0),
@@ -270,12 +293,12 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
         domain: str | None = None,
         limit: int = 50,
     ) -> list[FrontierUrlItem]:
-        items = index.get_frontier_urls(status=status, domain=domain, limit=limit)
+        items = await index.get_frontier_urls(status=status, domain=domain, limit=limit)
         return [FrontierUrlItem(**item) for item in items]
 
     @api.post("/v1/frontier/crawl", response_model=FrontierCrawlResponse)
     async def crawl_frontier(req: FrontierCrawlRequest) -> FrontierCrawlResponse:
-        pending = index.get_pending_frontier_urls(limit=req.limit, max_per_domain=req.max_per_domain)
+        pending = await index.get_pending_frontier_urls(limit=req.limit, max_per_domain=req.max_per_domain)
         enqueued_urls: list[str] = []
         for item in pending:
             url = item["url"]
@@ -287,7 +310,7 @@ def create_api_router(broker: AbstractQueueBroker, index: AbstractSearchIndex) -
                     metadata={"source_url": item.get("source_url", ""), "from_frontier": True},
                 )
             )
-            index.update_frontier_status(url, "queued")
+            await index.update_frontier_status(url, "queued")
             enqueued_urls.append(url)
 
         return FrontierCrawlResponse(

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class ServiceSettings(BaseModel):
     # Queue / Broker settings
-    redis_url: str = Field(default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    redis_url: str = Field(default_factory=lambda: os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"))
     fetch_queue_name: str = Field(default_factory=lambda: os.getenv("FETCH_QUEUE_NAME", "queue:fetch"))
     staging_queue_name: str = Field(default_factory=lambda: os.getenv("STAGING_QUEUE_NAME", "queue:staging"))
     index_queue_name: str = Field(default_factory=lambda: os.getenv("INDEX_QUEUE_NAME", "queue:index"))
@@ -26,13 +26,15 @@ class ServiceSettings(BaseModel):
     opensearch_url: str = Field(default_factory=lambda: os.getenv("OPENSEARCH_URL", "http://localhost:9200"))
     postgres_url: str = Field(
         default_factory=lambda: os.getenv(
-            "POSTGRES_URL", "postgresql://postgres:postgres@localhost:5432/search_db"
+            "POSTGRES_URL", "postgresql://postgres:postgres@127.0.0.1:5432/agent_search"
         )
     )
+    postgres_pool_min_size: int = Field(default_factory=lambda: int(os.getenv("POSTGRES_POOL_MIN", "2")))
+    postgres_pool_max_size: int = Field(default_factory=lambda: int(os.getenv("POSTGRES_POOL_MAX", "10")))
     sqlite_path: str = Field(default_factory=lambda: os.getenv("SQLITE_PATH", "data/crawler.sqlite3"))
     index_backend: str = Field(
-        default_factory=lambda: os.getenv("INDEX_BACKEND", "sqlite")
-    )  # "sqlite", "opensearch", "pgvector", or "hybrid"
+        default_factory=lambda: os.getenv("INDEX_BACKEND", "postgres")
+    )  # "postgres", "sqlite", "opensearch", or "hybrid"
 
     # API settings
     api_host: str = Field(default_factory=lambda: os.getenv("API_HOST", "0.0.0.0"))
