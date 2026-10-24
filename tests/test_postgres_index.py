@@ -95,6 +95,23 @@ async def test_postgres_index_and_search(pg_index: PostgresSearchIndex) -> None:
 
 
 @pytest.mark.anyio
+async def test_postgres_unsigned_64bit_simhash(pg_index: PostgresSearchIndex) -> None:
+    large_simhash = 14720958193186661231
+    doc_url = f"https://example.com/large-simhash-{uuid.uuid4().hex[:6]}"
+    doc = CleanDocument(
+        url=doc_url,
+        canonical_url=doc_url,
+        title="Large SimHash Test",
+        clean_text="SimHash values in Python can reach up to 2^64-1 without overflowing PostgreSQL numeric.",
+        simhash=large_simhash,
+        content_hash="hash_simhash_test",
+    )
+    await pg_index.index_document(doc)
+    # Re-index to test ON CONFLICT UPDATE path with large simhash
+    await pg_index.index_document(doc)
+
+
+@pytest.mark.anyio
 async def test_postgres_frontier_management(pg_index: PostgresSearchIndex) -> None:
     test_id = uuid.uuid4().hex[:6]
     records = [

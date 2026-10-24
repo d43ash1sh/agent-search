@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 from urllib.parse import urlsplit
@@ -79,13 +80,17 @@ class PostgresSearchIndex(AbstractSearchIndex):
                     sitename TEXT,
                     description TEXT,
                     content_hash TEXT NOT NULL DEFAULT '',
-                    simhash BIGINT NOT NULL DEFAULT 0,
+                    simhash NUMERIC(20, 0) NOT NULL DEFAULT 0,
                     changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain);
                 """
             )
+
+            # Auto-migrate simhash column to NUMERIC(20, 0) if previously BIGINT
+            with contextlib.suppress(Exception):
+                await conn.execute("ALTER TABLE documents ALTER COLUMN simhash TYPE NUMERIC(20, 0);")
 
             # Passages Table with pgvector (384 dimensions) and generated tsvector
             await conn.execute(
@@ -170,7 +175,7 @@ class PostgresSearchIndex(AbstractSearchIndex):
                 doc.sitename,
                 doc.description,
                 doc.content_hash,
-                doc.simhash,
+                int(doc.simhash or 0),
             )
 
             # 2. Delete existing passages for this document
