@@ -41,7 +41,10 @@ class PostgresSearchIndex(AbstractSearchIndex):
 
     async def _init_connection(self, conn: asyncpg.Connection) -> None:
         """Register the pgvector binary codec on each connection in the pool."""
-        await register_vector(conn)
+        try:
+            await register_vector(conn)
+        except Exception as exc:
+            logger.debug("Deferred register_vector on connection: %s", exc)
 
     async def get_pool(self) -> asyncpg.Pool:
         """Lazily initialize and return the asyncpg connection pool."""
@@ -58,6 +61,18 @@ class PostgresSearchIndex(AbstractSearchIndex):
         if self.pool is None:
             async with self._init_lock:
                 if self.pool is None:
+                    # Pre-bootstrap: ensure pgvector and pg_trgm extensions exist on a raw connection
+                    # before asyncpg.create_pool initializes pool connections with register_vector.
+                    try:
+                        bootstrap_conn = await asyncpg.connect(self.dsn)
+                        try:
+                            await bootstrap_conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                            await bootstrap_conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+                        finally:
+                            await bootstrap_conn.close()
+                    except Exception as boot_err:
+                        logger.warning("Pre-bootstrap extension initialization note: %s", boot_err)
+
                     self.pool = await asyncpg.create_pool(
                         dsn=self.dsn,
                         min_size=self.min_pool,
