@@ -9,6 +9,13 @@ from pydantic import BaseModel
 
 from services.fetcher.security import is_ssrf_safe_url
 
+try:
+    from curl_cffi.requests import AsyncSession
+
+    HAVE_CURL_CFFI = True
+except ImportError:  # pragma: no cover
+    HAVE_CURL_CFFI = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,9 +27,10 @@ class SerpResultItem(BaseModel):
 
 
 class DuckDuckGoSerpClient:
-    """Async zero-API-key SERP client querying DuckDuckGo HTML endpoint."""
+    """Async zero-API-key SERP client querying DuckDuckGo endpoints with smart fallback."""
 
-    SEARCH_URL = "https://html.duckduckgo.com/html/"
+    LITE_URL = "https://duckduckgo.com/lite/"
+    HTML_URL = "https://html.duckduckgo.com/html/"
 
     def __init__(self, timeout: float = 8.0) -> None:
         self.timeout = timeout
@@ -47,61 +55,126 @@ class DuckDuckGoSerpClient:
             return "https:" + raw_url
         return raw_url
 
-    async def search(self, query: str, limit: int = 5) -> list[SerpResultItem]:
-        """Execute web search and return parsed, SSRF-safe result links and snippets."""
-        if not query.strip():
-            return []
-
+    def _parse_html_results(self, html_text: str, limit: int) -> list[SerpResultItem]:
+        """Parse result links and snippets from DDG HTML or DDG Lite page."""
         results: list[SerpResultItem] = []
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                resp = await client.post(
-                    self.SEARCH_URL,
-                    data={"q": query},
-                    headers=self.headers,
+        selector = Selector(html_text)
+
+        # Format 1: DuckDuckGo HTML layout (.result)
+        result_elements = selector.css(".result")
+        if result_elements:
+            for el in result_elements:
+                title_elem = el.css(".result__title a")
+                snippet_elem = el.css(".result__snippet")
+                raw_href = title_elem.attrib.get("href", "")
+                if not raw_href:
+                    continue
+
+                clean_url = self._clean_url(raw_href)
+                if not clean_url.startswith(("http://", "https://")):
+                    continue
+
+                safe, _ = is_ssrf_safe_url(clean_url)
+                if not safe:
+                    continue
+
+                title = "".join(title_elem.css("::text").getall()).strip()
+                snippet = "".join(snippet_elem.css("::text").getall()).strip()
+                domain = (urllib.parse.urlsplit(clean_url).hostname or "").lower()
+
+                results.append(
+                    SerpResultItem(
+                        title=title,
+                        url=clean_url,
+                        snippet=snippet,
+                        domain=domain,
+                    )
                 )
-                if resp.status_code != 200:
-                    logger.warning(
-                        "DuckDuckGo SERP search returned HTTP %d for '%s'", resp.status_code, query
-                    )
-                    return []
+                if len(results) >= limit:
+                    break
+            if results:
+                return results
 
-                selector = Selector(resp.text)
-                result_elements = selector.css(".result")
+        # Format 2: DuckDuckGo Lite layout (.result-link, .result-snippet)
+        link_elements = selector.css(".result-link")
+        snippet_elements = selector.css(".result-snippet")
+        for i, link_el in enumerate(link_elements):
+            raw_href = link_el.attrib.get("href", "")
+            if not raw_href:
+                continue
 
-                for el in result_elements:
-                    title_elem = el.css(".result__title a")
-                    snippet_elem = el.css(".result__snippet")
+            clean_url = self._clean_url(raw_href)
+            if not clean_url.startswith(("http://", "https://")):
+                continue
 
-                    raw_href = title_elem.attrib.get("href", "")
-                    if not raw_href:
-                        continue
+            safe, _ = is_ssrf_safe_url(clean_url)
+            if not safe:
+                continue
 
-                    clean_url = self._clean_url(raw_href)
-                    if not clean_url.startswith(("http://", "https://")):
-                        continue
+            title = "".join(link_el.css("::text").getall()).strip()
+            snippet = (
+                "".join(snippet_elements[i].css("::text").getall()).strip()
+                if i < len(snippet_elements)
+                else ""
+            )
+            domain = (urllib.parse.urlsplit(clean_url).hostname or "").lower()
 
-                    # SSRF safety filter: prevent internal or private URLs from SERP poisoning
-                    safe, _ = is_ssrf_safe_url(clean_url)
-                    if not safe:
-                        continue
-
-                    title = "".join(title_elem.css("::text").getall()).strip()
-                    snippet = "".join(snippet_elem.css("::text").getall()).strip()
-                    domain = (urllib.parse.urlsplit(clean_url).hostname or "").lower()
-
-                    results.append(
-                        SerpResultItem(
-                            title=title,
-                            url=clean_url,
-                            snippet=snippet,
-                            domain=domain,
-                        )
-                    )
-                    if len(results) >= limit:
-                        break
-
-        except Exception as exc:
-            logger.warning("DuckDuckGo SERP lookup error for '%s': %s", query, exc)
+            results.append(
+                SerpResultItem(
+                    title=title,
+                    url=clean_url,
+                    snippet=snippet,
+                    domain=domain,
+                )
+            )
+            if len(results) >= limit:
+                break
 
         return results
+
+    async def _fetch_html_text(self, url: str, query: str) -> str:
+        """Fetch search page HTML using curl_cffi browser impersonation or httpx fallback."""
+        if HAVE_CURL_CFFI:
+            try:
+                async with AsyncSession(impersonate="chrome", timeout=self.timeout) as session:
+                    resp = await session.get(url, params={"q": query})
+                    if resp.status_code == 200 and len(resp.text) > 500:
+                        return str(resp.text)
+            except Exception as curl_err:
+                logger.debug("curl_cffi fetch failed for %s: %s", url, curl_err)
+
+        async with httpx.AsyncClient(
+            timeout=self.timeout, follow_redirects=True, headers=self.headers
+        ) as client:
+            resp = await client.get(url, params={"q": query})
+            if resp.status_code == 200:
+                return str(resp.text)
+        return ""
+
+    async def search(self, query: str, limit: int = 5) -> list[SerpResultItem]:
+        """Execute web search and return parsed, SSRF-safe result links and snippets."""
+        clean_query = query.strip()
+        if not clean_query:
+            return []
+
+        # 1. Primary: DuckDuckGo Lite endpoint (clean, high-availability, text-first)
+        try:
+            html = await self._fetch_html_text(self.LITE_URL, clean_query)
+            if html:
+                results = self._parse_html_results(html, limit=limit)
+                if results:
+                    return results
+        except Exception as exc:
+            logger.warning("DuckDuckGo Lite search error for '%s': %s", clean_query, exc)
+
+        # 2. Secondary: DuckDuckGo HTML endpoint
+        try:
+            html = await self._fetch_html_text(self.HTML_URL, clean_query)
+            if html:
+                results = self._parse_html_results(html, limit=limit)
+                if results:
+                    return results
+        except Exception as exc:
+            logger.warning("DuckDuckGo HTML search error for '%s': %s", clean_query, exc)
+
+        return []
