@@ -1,175 +1,234 @@
-# Agent Search prototype
+# Agent Search
 
-This prototype is organized as a crawl-to-evidence pipeline:
+[![CI](https://github.com/siddharthaborah/agent-search/actions/workflows/ci.yml/badge.svg)](https://github.com/siddharthaborah/agent-search/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![PostgreSQL pgvector](https://img.shields.io/badge/PostgreSQL-pgvector-336791.svg)](https://github.com/pgvector/pgvector)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D.svg)](https://redis.io/)
+[![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33.svg)](https://playwright.dev/)
+[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-purple.svg)](https://modelcontextprotocol.io/)
 
-- **Crawl infrastructure:** Scrapy fetches seed URLs and allowed links, obeys
-  `robots.txt`, applies per-domain delays, retries/timeouts, and stores a
-  content hash plus last-changed/fetched timestamps.
-- **Content processing:** HTML is reduced to page text and structured text
-  blocks, nested blocks and exact duplicate blocks are removed, then content
-  is split into passages. Navigation, footer, header, script, and style text is
-  excluded from the structured extraction.
-- **Search index:** SQLite FTS5 provides lexical passage search with source
-  filtering and canonical-URL deduplication.
-- **Agent retrieval API:** FastAPI returns compact passages with citation
-  metadata and a conservative token estimate/budget.
-- **Protocol integration:** HTTP is the first interface; the API publishes
-  OpenAPI docs at `/docs`. MCP can later wrap the same search service.
+**Agent Search** is an enterprise-grade, high-performance web crawl, extraction, search, and retrieval engine purpose-built for autonomous AI agents, LLM toolchains, and RAG pipelines.
 
-Semantic retrieval is not implemented yet. The first retrieval mode is
-explicitly lexical; an embedding model/backend is needed before semantic or
-hybrid search can be truthfully offered.
+---
 
-## Setup
+## Key Highlights
 
-Create and activate a virtual environment, then install the package in
-editable mode with development dependencies:
+- **Decoupled 25x Concurrency Pipeline**: Asynchronous HTTP/2 fetchers with an isolated 3-worker Playwright Chromium pool providing automated fallback on JavaScript SPAs, 403/401/429/503 access challenges, and SSL negotiation failures.
+- **SSRF & Intranet Defense**: Pre-flight DNS resolution blocking loopback, link-local, RFC1918 subnets, and cloud metadata services (`169.254.169.254`).
+- **Domain Politeness & Idempotency**: 24-hour cached `robots.txt` compliance, token bucket rate-limiting, domain concurrency leases, and deterministic `SHA256(URL + options)` deduplication.
+- **Precision Extraction & Sentence Chunking**: Trafilatura readability engine with aggressive boilerplate pruning (XPath navigation, header, footer, and social widget removal) and sentence-level windowing ($\le 1000$ chars / ~180 tokens) maintaining exact character offsets into original clean documents.
+- **Hybrid Retrieval & Neural Reranking**: PostgreSQL 16 `pgvector` HNSW index + FastEmbed ONNX (`BAAI/bge-small-en-v1.5`) dense semantic embeddings + FlashRank TinyBERT Cross-Encoder neural reranker + 64-bit SimHash near-duplicate deduplication.
+- **Model Context Protocol (MCP)**: Native stdio and HTTP/SSE JSON-RPC transports compatible with Claude Desktop, Cursor, Gemini CLI, and agent frameworks.
+- **Async & Sync REST Endpoints**: Synchronous `/v1/scrape`, Asynchronous `/v1/crawl` (with job ID progress polling), `/v1/map`, `/v1/extract`, and `/v1/search`.
+
+---
+
+## Architecture Overview
+
+```
+                      ┌──────────────────────────────────────┐
+                      │    FastAPI Gateway & MCP Server      │
+                      └──────────────────┬───────────────────┘
+                                         │ Enqueue Fetch
+                                         ▼
+                      ┌──────────────────────────────────────┐
+                      │    Redis Queue & URL Frontier        │
+                      └──────────────────┬───────────────────┘
+                                         │
+                 ┌───────────────────────┴───────────────────────┐
+                 ▼                                               ▼
+    ┌─────────────────────────┐                     ┌─────────────────────────┐
+    │   Fast HTTP/2 Fetcher   │──[SPA / Challenge]─▶│ Playwright Worker Pool  │
+    │  (SSRF Guard + Robots)  │                     │  (3 Sandboxed Browsers) │
+    └────────────┬────────────┘                     └────────────┬────────────┘
+                 │                                               │
+                 └───────────────────────┬───────────────────────┘
+                                         │ Raw HTML
+                                         ▼
+                      ┌──────────────────────────────────────┐
+                      │      Trafilatura Readability         │
+                      │    + Boilerplate XPath Pruning       │
+                      └──────────────────┬───────────────────┘
+                                         │
+                                         ▼
+                      ┌──────────────────────────────────────┐
+                      │ Sentence-Level Window Chunker        │
+                      │ (<=1,000 chars, exact char offsets)  │
+                      └──────────────────┬───────────────────┘
+                                         │
+                                         ▼
+                      ┌──────────────────────────────────────┐
+                      │   64-bit SimHash Deduplication       │
+                      │   FastEmbed Dense Vector Generator   │
+                      └──────────────────┬───────────────────┘
+                                         │
+                                         ▼
+                      ┌──────────────────────────────────────┐
+                      │ PostgreSQL 16 + pgvector HNSW Index  │
+                      │  + FlashRank Cross-Encoder Reranker  │
+                      └──────────────────────────────────────┘
+```
+
+---
+
+## Quickstart
+
+### 1. Prerequisites
+- Python 3.12 or 3.13
+- Docker and Docker Compose
+
+### 2. Infrastructure Setup (PostgreSQL + Redis)
+Start the PostgreSQL (with pgvector) and Redis containers:
 
 ```sh
-# Linux / macOS
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+docker compose up -d
+```
 
-# Windows (PowerShell)
+### 3. Environment Installation
+Clone the repository, create a virtual environment, and install dependencies:
+
+```sh
+# Clone repository
+git clone https://github.com/siddharthaborah/agent-search.git
+cd agent-search
+
+# Setup virtual environment (Windows PowerShell)
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
+playwright install chromium
+
+# Setup virtual environment (Linux / macOS)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+playwright install chromium
 ```
 
-Install the pre-commit hooks (runs linting and formatting on every commit):
+### 4. Run All Services
+Launch the complete orchestration stack (FastAPI server, parallel crawler workers, and indexing pipelines):
 
 ```sh
-pre-commit install
+python run_all.py
 ```
 
-## Crawl
+The web dashboard and OpenAPI documentation will be live at:
+- **Interactive API Documentation:** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Live Monitoring Dashboard:** [http://localhost:8000/dashboard](http://localhost:8000/dashboard)
 
-### Single or Multi-Seed Crawl
+---
+
+## REST API Reference
+
+### 1. Synchronous Live Scrape (`POST /v1/scrape`)
+Fetches and cleans a web page synchronously, with optional Playwright dynamic JS execution.
 
 ```sh
-python -m crawler crawl \
-  --seed https://example.com/ \
-  --seed https://docs.example.com/ \
-  --allow-domain example.com \
-  --database data/crawler.sqlite3
+# Single-line PowerShell / Bash
+curl -X POST http://localhost:8000/v1/scrape -H "Content-Type: application/json" -d "{\"url\": \"https://simonwillison.net\", \"render_js\": false}"
 ```
 
-### Broad Crawl (500–1,000 Websites)
-
-For crawling hundreds of domains, supply a seeds file (`seeds.txt` or `seeds.json`) with per-domain limits, sitemap discovery, and broad-scale concurrency:
+### 2. Asynchronous Background Crawl (`POST /v1/crawl`)
+Submits a crawl job that executes asynchronously, respecting domain politeness and rate limits. Returns a `job_id`.
 
 ```sh
-python -m crawler crawl \
-  --seeds-file seeds.txt \
-  --concurrency 100 \
-  --concurrency-per-domain 2 \
-  --max-pages-per-domain 25 \
-  --max-depth 2 \
-  --sitemaps \
-  --jobdir data/crawls/job1 \
-  --database data/crawler.sqlite3
+curl -X POST http://localhost:8000/v1/crawl -H "Content-Type: application/json" -d "{\"url\": \"https://simonwillison.net\", \"max_pages\": 20}"
 ```
 
-- `--seeds-file`: Path to a text file with one URL per line (supports `#` comments) or a JSON array of URLs.
-- `--max-pages-per-domain N`: Caps the number of indexed pages per domain (default `0` = unlimited) to prevent any single domain from starving others.
-- `--max-depth N`: Maximum link recursion depth from seed URLs (default `0` = unlimited).
-- `--sitemaps`: Automatically discovers and parses XML sitemaps (`/sitemap.xml`) to directly index authoritative documentation URLs.
-- `--jobdir DIR`: Persists the crawl queue and dupefilter state to disk, allowing interrupted crawls to be safely resumed.
-- `--concurrency N`: Maximum concurrent requests in-flight globally (default `64`).
-- `--concurrency-per-domain N`: Maximum concurrent requests per individual domain (default `2`).
+**Response:**
+```json
+{
+  "job_id": "crawl_7e44a2b918df",
+  "status": "queued",
+  "seed_url": "https://simonwillison.net",
+  "message": "Crawl job accepted"
+}
+```
 
-If `--allow-domain` is omitted, each seed's hostname is used as an allowed
-domain. Exact hostnames and their subdomains are permitted. The crawler obeys
-`robots.txt`, waits the configured delay between requests to each domain,
-allows one concurrent request per domain, uses a 15-second download timeout,
-and retries selected transient errors twice by default. Tune with `--delay`,
-`--timeout`, and `--retries`.
+Check job progress at any time:
+```sh
+curl http://localhost:8000/v1/jobs/crawl_7e44a2b918df
+```
 
-Re-running a crawl upserts documents. `changed_at` moves when the canonical
-URL, title, or extracted text changes; `fetched_at` tracks the most recent
-successful fetch. Re-crawl existing sites after changing extraction logic so
-their already-indexed passages are rebuilt from the cleaned content.
-
-For a continuously refreshed prototype, opt into a full recrawl interval:
+### 3. Domain Outlink & Sitemap Mapping (`POST /v1/map`)
+Discovers authoritative URLs and internal paths without scraping full page content:
 
 ```sh
-python -m crawler crawl --seed https://example.com/ \
-  --allow-domain example.com --repeat-every 3600
+curl -X POST http://localhost:8000/v1/map -H "Content-Type: application/json" -d "{\"url\": \"https://simonwillison.net\", \"limit\": 50}"
 ```
 
-The first crawl starts immediately; subsequent crawls start after the configured
-sleep interval. This is a simple periodic refresh, not a change-aware frontier
-or per-URL scheduler.
-
-Use `--max-pages N` to bound the number of downloaded pages in one crawl;
-`0` means unlimited.
-
-## HTTP API
-
-Start the API against the same SQLite index:
+### 4. Structured Item Extraction (`POST /v1/extract`)
+Extracts structured entity records using CSS selectors or JSON field definitions:
 
 ```sh
-python -m crawler serve --database data/crawler.sqlite3 --host 127.0.0.1 --port 8000
+curl -X POST http://localhost:8000/v1/extract -H "Content-Type: application/json" -d "{\"url\": \"https://news.ycombinator.com\", \"selectors\": {\"title\": \".titleline > a\", \"score\": \".score\"}}"
 ```
 
-The index must exist first. If search returns `503`, crawl at least one seed
-using the same database path passed to `serve`:
+### 5. Hybrid Semantic Search (`GET /v1/search`)
+Executes dense vector search combined with BM25 lexical matching, Reciprocal Rank Fusion (RRF), and FlashRank neural reranking:
 
 ```sh
-python -m crawler crawl --seed https://example.com/ \
-  --allow-domain example.com --database data/crawler.sqlite3
-python -m crawler serve --database data/crawler.sqlite3
+curl "http://localhost:8000/v1/search?q=prompt+engineering&limit=5&max_tokens=800"
 ```
 
-Search with a token budget and optional repeated domain filters:
+Each result contains:
+- `evidence_id`: Deterministic passage identifier.
+- `citation`: Exact string start and end offsets (`start_offset`, `end_offset`) into the parent document.
+- `estimated_tokens`: Token budget estimation.
+
+---
+
+## Model Context Protocol (MCP) Server
+
+Agent Search provides a native Model Context Protocol (MCP) server allowing direct integration with Claude Desktop, Cursor, Gemini CLI, and custom agent toolchains.
+
+### Available MCP Tools
+- `search_passages`: Hybrid search with token limits and neural reranking.
+- `get_evidence_context`: Fetches neighboring context passages around any cited passage.
+- `get_document`: Retrieves the full document text by document ID or URL.
+- `fetch_live_page`: Live scrape with Trafilatura cleaning and optional Playwright JS execution.
+- `enqueue_crawl_url`: Queues URLs into the distributed crawler frontier.
+- `crawl_frontier_batch`: Executes a batch crawl from the pending URL queue.
+- `get_search_stats`: Reports index size, vector counts, cache hit rates, and worker statuses.
+
+### Claude Desktop Configuration
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "agent-search": {
+      "command": "python",
+      "args": ["d:/project-base-url/run_mcp.py"]
+    }
+  }
+}
+```
+
+Or connect via the MCP HTTP endpoint at `http://localhost:8000/mcp`.
+
+---
+
+## Testing & Quality Assurance
+
+The codebase includes an extensive automated test suite covering unit, integration, and security layers:
 
 ```sh
-curl 'http://127.0.0.1:8000/v1/search?q=retry+policy&limit=5&max_tokens=700&domain=docs.scrapy.org'
+# Run full pytest suite (77 tests)
+pytest
+
+# Ruff linting check
+ruff check crawler/ services/ tests/
+
+# Ruff formatting check
+ruff format --check crawler/ services/ tests/
+
+# Strict Mypy type check
+mypy crawler services tests
 ```
 
-By default, every query term must match a passage (`match=all`), improving
-precision over the previous broad OR behavior. Use `match=any` to broaden
-recall when a strict query returns too few results:
+---
 
-```sh
-curl 'http://127.0.0.1:8000/v1/search?q=retry+policy&match=any&domain=docs.scrapy.org'
-```
+## License
 
-The JSON response includes ranked `results`, passage text, URL/canonical URL,
-title, source domain, fetch/change timestamps, per-result `estimated_tokens`,
-total estimated tokens, the requested budget, and `retrieval_mode: "lexical"`.
-It also returns the applied `match_mode`.
-Token counts are model-independent estimates (roughly one token per four
-characters), not exact tokenizer counts. `GET /health` is a liveness check;
-interactive API documentation is available at `/docs`.
-
-Each result has a stable `evidence_id`. `citation.start_offset` and
-`citation.end_offset` are zero-based, end-exclusive Python string offsets into
-the indexed cleaned document text. Retrieve that passage later with:
-
-```sh
-curl 'http://127.0.0.1:8000/v1/evidence/<evidence_id>'
-```
-
-The API migrates existing SQLite indexes on startup to add passage IDs and
-offsets.
-
-The JSON CLI remains available:
-
-```sh
-python -m crawler search "retry policy" --match all --database data/crawler.sqlite3
-```
-
-## Tests
-
-```sh
-.venv/bin/python -m unittest discover -s tests
-```
-
-## Documentation
-
-- [Scrapy tutorial](https://docs.scrapy.org/en/latest/intro/tutorial.html)
-- [Scrapy downloader middleware and retries](https://docs.scrapy.org/en/latest/topics/downloader-middleware.html#retrymiddleware)
-- [Scrapy AutoThrottle](https://docs.scrapy.org/en/latest/topics/autothrottle.html)
-- [FastAPI first steps](https://fastapi.tiangolo.com/tutorial/first-steps/)
+This project is licensed under the MIT License.

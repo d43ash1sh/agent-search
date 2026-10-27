@@ -114,7 +114,7 @@ class InMemoryUrlCache(AbstractUrlCache):
         return unseen
 
     async def get_cached_page(self, url: str, cache_key: str | None = None) -> RawPageRecord | None:
-        key = cache_key or compute_sha256(url)
+        key = cache_key or make_cache_key(url)
         now = time.monotonic()
         item = self._page_cache.get(key)
         if item is not None:
@@ -129,13 +129,13 @@ class InMemoryUrlCache(AbstractUrlCache):
     async def set_cached_page(
         self, record: RawPageRecord, ttl: int | None = None, cache_key: str | None = None
     ) -> None:
-        key = cache_key or compute_sha256(record.url)
+        key = cache_key or make_cache_key(record.url)
         lifetime = ttl or settings.page_cache_ttl_seconds
         expire_at = time.monotonic() + lifetime
         self._page_cache[key] = (record, expire_at)
 
     async def acquire_crawl_lock(self, url: str, ttl: int = 60, lock_key: str | None = None) -> bool:
-        key = lock_key or compute_sha256(url)
+        key = lock_key or make_cache_key(url)
         now = time.monotonic()
         async with self._lock:
             if key in self._locks and now < self._locks[key]:
@@ -144,7 +144,7 @@ class InMemoryUrlCache(AbstractUrlCache):
             return True
 
     async def release_crawl_lock(self, url: str, lock_key: str | None = None) -> None:
-        key = lock_key or compute_sha256(url)
+        key = lock_key or make_cache_key(url)
         async with self._lock:
             self._locks.pop(key, None)
 
@@ -248,7 +248,7 @@ class RedisUrlCache(AbstractUrlCache):
             return urls
 
     async def get_cached_page(self, url: str, cache_key: str | None = None) -> RawPageRecord | None:
-        raw_key = cache_key or compute_sha256(url)
+        raw_key = cache_key or make_cache_key(url)
         key = f"{self.PAGE_KEY_PREFIX}{raw_key}"
         try:
             client = await self._get_client()
@@ -265,7 +265,7 @@ class RedisUrlCache(AbstractUrlCache):
     async def set_cached_page(
         self, record: RawPageRecord, ttl: int | None = None, cache_key: str | None = None
     ) -> None:
-        raw_key = cache_key or compute_sha256(record.url)
+        raw_key = cache_key or make_cache_key(record.url)
         key = f"{self.PAGE_KEY_PREFIX}{raw_key}"
         lifetime = ttl or settings.page_cache_ttl_seconds
         try:
@@ -276,7 +276,7 @@ class RedisUrlCache(AbstractUrlCache):
 
     async def acquire_crawl_lock(self, url: str, ttl: int = 60, lock_key: str | None = None) -> bool:
         """Atomic lock using SET with NX and EX to prevent duplicate concurrent crawls."""
-        raw_key = lock_key or compute_sha256(url)
+        raw_key = lock_key or make_cache_key(url)
         key = f"{self.LOCK_KEY_PREFIX}{raw_key}"
         try:
             client = await self._get_client()
@@ -287,7 +287,7 @@ class RedisUrlCache(AbstractUrlCache):
             return True  # Proceed if lock check fails
 
     async def release_crawl_lock(self, url: str, lock_key: str | None = None) -> None:
-        raw_key = lock_key or compute_sha256(url)
+        raw_key = lock_key or make_cache_key(url)
         key = f"{self.LOCK_KEY_PREFIX}{raw_key}"
         try:
             client = await self._get_client()

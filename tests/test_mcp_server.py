@@ -26,8 +26,10 @@ async def test_mcp_list_tools() -> None:
 async def test_mcp_call_stats_tool() -> None:
     res = await mcp.call_tool("get_search_stats", {})
     assert res is not None
+    assert hasattr(res, "content")
+    content = getattr(res, "content", [])
     text = ""
-    for item in res.content:
+    for item in content:
         text += getattr(item, "text", str(item))
     data = json.loads(text)
     assert "index" in data

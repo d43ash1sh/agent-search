@@ -69,10 +69,10 @@ class PolitenessManager:
                     parser.parse(resp.text.splitlines())
                 else:
                     # 404 or other errors mean everything is allowed
-                    parser.allow_all = True
+                    parser.parse(["User-agent: *", "Allow: /"])
         except Exception as exc:
             logger.debug("Could not fetch robots.txt for %s: %s (assuming allowed)", domain, exc)
-            parser.allow_all = True
+            parser.parse(["User-agent: *", "Allow: /"])
 
         self._robots_cache[domain] = (parser, now)
         return parser

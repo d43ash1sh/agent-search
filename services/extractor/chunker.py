@@ -77,25 +77,22 @@ def chunk_document(
                         unit_spans.append((actual_s, actual_s + len(s_str)))
 
     # 3. Pack consecutive unit spans into passages <= max_chars
-    raw_chunks: list[tuple[int, int]] = []
-    cur_start: int | None = None
-    cur_end: int | None = None
+    if not unit_spans:
+        return []
 
-    for u_start, u_end in unit_spans:
-        if cur_start is None:
-            cur_start = u_start
+    raw_chunks: list[tuple[int, int]] = []
+    cur_start, cur_end = unit_spans[0]
+
+    for u_start, u_end in unit_spans[1:]:
+        cand_len = u_end - cur_start
+        if cand_len <= max_chars:
             cur_end = u_end
         else:
-            cand_len = u_end - cur_start
-            if cand_len <= max_chars:
-                cur_end = u_end
-            else:
-                raw_chunks.append((cur_start, cur_end))
-                cur_start = u_start
-                cur_end = u_end
+            raw_chunks.append((cur_start, cur_end))
+            cur_start = u_start
+            cur_end = u_end
 
-    if cur_start is not None and cur_end is not None:
-        raw_chunks.append((cur_start, cur_end))
+    raw_chunks.append((cur_start, cur_end))
 
     # Merge very small trailing chunk if feasible
     if len(raw_chunks) > 1:
