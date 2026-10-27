@@ -11,12 +11,14 @@ from services.common.citations import CitationFormatter
 from services.common.hashing import compute_simhash
 from services.common.models import CleanDocument, SearchHit
 from services.discovery.common_crawl import CommonCrawlClient
+from services.discovery.news_discovery import OpenNewsDiscovery
 from services.discovery.open_search import OpenKnowledgeDiscovery
 from services.extractor.chunker import chunk_document
 from services.extractor.trafilatura_cleaner import TrafilaturaCleaner
 from services.fetcher.http_client import AsyncHttpFetcher
 from services.indexer.base import AbstractSearchIndex
 from services.indexer.reranker import NeuralReranker
+from services.search.serp_client import DuckDuckGoSerpClient
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,8 @@ class AutonomousSearchEngine:
         self.http_fetcher = AsyncHttpFetcher(timeout=10.0)
         self.open_discovery = OpenKnowledgeDiscovery()
         self.common_crawl = CommonCrawlClient()
+        self.news_discovery = OpenNewsDiscovery()
+        self.serp_client = DuckDuckGoSerpClient()
 
     async def _fetch_and_index_urls(self, urls: list[str]) -> list[str]:
         """Fetch and index a list of open discovery URLs into the local search store."""
@@ -132,19 +136,48 @@ class AutonomousSearchEngine:
         # 2. Cold-query autonomous discovery (if local index has 0 hits and discovery allowed)
         if not hits and allow_autonomous_discovery:
             discovery_mode = "autonomous_crawl"
-            logger.info("Cold query '%s': triggering open web discovery...", clean_query)
+            logger.info("Cold query '%s': triggering multi-channel open web discovery...", clean_query)
 
-            # Try open knowledge discovery first
-            open_results = await self.open_discovery.search(clean_query, limit=3)
-            urls_to_crawl = [r.url for r in open_results]
+            candidate_urls: list[str] = []
+            seen_discovery_domains: set[str] = set()
 
-            # If still empty, try Common Crawl CDX open index
-            if not urls_to_crawl:
+            # A. Broad SERP discovery (captures news dailies, blogs, official portals)
+            try:
+                serp_results = await self.serp_client.search(clean_query, limit=5)
+                for item in serp_results:
+                    if item.domain and item.domain not in seen_discovery_domains:
+                        seen_discovery_domains.add(item.domain)
+                        candidate_urls.append(item.url)
+            except Exception as exc:
+                logger.debug("SERP discovery note: %s", exc)
+
+            # B. Open News RSS discovery (captures live regional & national reporting)
+            try:
+                news_items = await self.news_discovery.search_news(clean_query, limit=5)
+                for n_item in news_items:
+                    if n_item.domain and n_item.domain not in seen_discovery_domains:
+                        seen_discovery_domains.add(n_item.domain)
+                        candidate_urls.append(n_item.url)
+            except Exception as exc:
+                logger.debug("News discovery note: %s", exc)
+
+            # C. Open Knowledge / Wikimedia discovery (captures encyclopedic entries)
+            try:
+                open_results = await self.open_discovery.search(clean_query, limit=3)
+                for k_item in open_results:
+                    if k_item.domain and k_item.domain not in seen_discovery_domains:
+                        seen_discovery_domains.add(k_item.domain)
+                        candidate_urls.append(k_item.url)
+            except Exception as exc:
+                logger.debug("Knowledge discovery note: %s", exc)
+
+            # D. Common Crawl open index fallback
+            if not candidate_urls:
                 cc_records = await self.common_crawl.discover_urls(f"*{clean_query}*", limit=3)
-                urls_to_crawl = [r.url for r in cc_records]
+                candidate_urls = [r.url for r in cc_records]
 
-            if urls_to_crawl:
-                discovered_urls = await self._fetch_and_index_urls(urls_to_crawl)
+            if candidate_urls:
+                discovered_urls = await self._fetch_and_index_urls(candidate_urls)
                 # Re-query local index after indexing new pages
                 hits, _total_tokens = await self.index.search(
                     query=clean_query,
@@ -192,18 +225,25 @@ class AutonomousSearchEngine:
             query=clean_query,
             hits=adjusted_hits,
             max_tokens=max_tokens,
-            top_k=limit,
+            top_k=limit * 2,
         )
 
-        # 5. Enforce token budget and count
+        # 5. Enforce token budget, count, and domain diversity (max 2 per domain)
         final_hits: list[SearchHit] = []
+        domain_hit_counts: dict[str, int] = {}
         acc_tokens = 0
-        for rh in reranked_hits[:limit]:
+        for rh in reranked_hits:
+            domain = (urllib.parse.urlsplit(rh.url).hostname or "").lower()
+            current_count = domain_hit_counts.get(domain, 0)
+            if current_count >= 2:
+                continue
+
             if acc_tokens + rh.estimated_tokens <= max_tokens or not final_hits:
                 final_hits.append(rh)
+                domain_hit_counts[domain] = current_count + 1
                 acc_tokens += rh.estimated_tokens
-            else:
-                break
+                if len(final_hits) >= limit:
+                    break
 
         # 6. Build LLM Grounding Citations Markdown
         citations_md = CitationFormatter.format_markdown(final_hits)
