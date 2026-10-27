@@ -49,6 +49,15 @@ class AutonomousSearchRequest(BaseModel):
     limit: int = 5
     tokens: int = 1500
     allow_discovery: bool = True
+    decompose: bool = False
+    synthesize: bool = False
+
+
+class EvidenceSearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+    tokens: int = 1500
+    allow_discovery: bool = True
 
 
 class CommonCrawlDiscoveryRequest(BaseModel):
@@ -278,6 +287,21 @@ def create_api_router(
     async def search_autonomous(req: AutonomousSearchRequest) -> AutonomousSearchResponse:
         """100% self-hosted search: hybrid retrieval, PageRank domain boost, cross-encoder reranking, and open discovery."""
         return await autonomous_engine.search(
+            query=req.query,
+            limit=req.limit,
+            max_tokens=req.tokens,
+            allow_autonomous_discovery=req.allow_discovery,
+            decompose=req.decompose,
+            synthesize=req.synthesize,
+        )
+
+    @api.post("/v1/search/evidence", response_model=AutonomousSearchResponse)
+    async def search_evidence(req: EvidenceSearchRequest) -> AutonomousSearchResponse:
+        """Evidence-based AI answer engine: multi-angle query decomposition, domain authority tiering,
+
+        cross-document consensus scoring, and fine-grained claim attribution.
+        """
+        return await autonomous_engine.search_evidence(
             query=req.query,
             limit=req.limit,
             max_tokens=req.tokens,

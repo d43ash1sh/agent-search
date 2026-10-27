@@ -187,6 +187,18 @@ Each result contains:
 - `citation`: Exact string start and end offsets (`start_offset`, `end_offset`) into the parent document.
 - `estimated_tokens`: Token budget estimation.
 
+### 7. Evidence-Based Answer Engine (`POST /v1/search/evidence`)
+Perplexity/Consensus-grade answer engine executing multi-angle query decomposition, domain authority tiering, cross-document consensus analysis, and fine-grained claim attribution with confidence ratings (`HIGH_CONSENSUS`, `MODERATE_EVIDENCE`, `CONTESTED`):
+
+```sh
+curl -X POST http://localhost:8000/v1/search/evidence -H "Content-Type: application/json" -d "{\"query\": \"Does creatine cause hair loss?\", \"limit\": 5}"
+```
+
+The response includes:
+- `decomposition`: Intent classification (`medical_health`, `technical_code`, `legal_policy`, `current_news`, `comparative_analysis`, `general_knowledge`) and targeted retrieval sub-queries.
+- `synthesis`: Consolidated answer summary, key verified findings with footnote references (`[^1]`), claim breakdown mapped to source documents, identified caveats or contested points, and consensus level.
+- `citations_markdown`: LLM prompt grounding footnotes with clickable links.
+
 ---
 
 ## Model Context Protocol (MCP) Server
@@ -194,12 +206,13 @@ Each result contains:
 Agent Search provides a native Model Context Protocol (MCP) server allowing direct integration with Claude Desktop, Cursor, Gemini CLI, and custom agent toolchains.
 
 ### Available MCP Tools
+- `synthesize_evidence`: Consensus-grade evidence engine that decomposes queries into multi-angle sub-queries, queries hybrid pgvector index with domain authority tier weighting, checks cross-document corroboration, and outputs fine-grained attributed findings.
+- `autonomous_search`: 100% self-hosted search without commercial SERPs, combining local hybrid retrieval, PageRank domain authority multipliers, cross-encoder reranking, and open discovery.
 - `live_web_search`: Autonomous live web metasearch that queries the live internet, extracts and indexes content on the fly, and returns neural-reranked cited passages.
 - `search_passages`: Hybrid search across indexed documents with token limits and neural reranking.
 - `get_evidence_context`: Fetches neighboring context passages around any cited passage.
 - `get_document`: Retrieves the full document text by document ID or URL.
 - `fetch_live_page`: Live scrape with Trafilatura cleaning, optional Playwright JS execution, UI action automation, and multimodal base64 screenshot capture.
-- `autonomous_search`: 100% self-hosted search without commercial SERPs, combining local hybrid retrieval, PageRank domain authority multipliers, cross-encoder reranking, and open discovery.
 - `query_common_crawl`: Discovers open web URLs from the petabyte-scale Common Crawl CDX index.
 - `get_autonomous_crawler_status`: Reports live telemetry and metrics of the autonomous 24/7 web crawler daemon.
 - `enqueue_crawl_url`: Queues URLs into the distributed crawler frontier.
@@ -229,7 +242,7 @@ Or connect via the MCP HTTP endpoint at `http://localhost:8000/mcp`.
 The codebase includes an extensive automated test suite covering unit, integration, and security layers:
 
 ```sh
-# Run full pytest suite (94 tests)
+# Run full pytest suite (102 tests)
 pytest
 
 # Ruff linting check

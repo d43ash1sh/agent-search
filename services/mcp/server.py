@@ -333,6 +333,37 @@ async def autonomous_search(
 
 
 @mcp.tool(
+    name="synthesize_evidence",
+    description=(
+        "Perplexity/Consensus-grade evidence synthesis engine: decomposes complex queries "
+        "into multi-angle sub-queries, queries hybrid pgvector index, applies Domain Authority "
+        "tier weighting (Tier 1 .gov/academic, Tier 2 reputable press), performs cross-document "
+        "consensus analysis, detects caveats/contradictions, and outputs fine-grained attributed findings."
+    ),
+    annotations=ToolAnnotations(read_only_hint=False),
+)
+async def synthesize_evidence(
+    query: str,
+    limit: int = 5,
+    max_tokens: int = 1500,
+    allow_discovery: bool = True,
+) -> str:
+    """Execute multi-angle query decomposition, domain tiering, and consensus evidence synthesis."""
+    from services.search.autonomous_engine import AutonomousSearchEngine
+
+    index = get_search_index()
+    reranker = get_reranker()
+    engine = AutonomousSearchEngine(index=index, reranker=reranker)
+    res = await engine.search_evidence(
+        query=query,
+        limit=limit,
+        max_tokens=max_tokens,
+        allow_autonomous_discovery=allow_discovery,
+    )
+    return json.dumps(res.model_dump(), indent=2)
+
+
+@mcp.tool(
     name="query_common_crawl",
     description=(
         "Query the open Common Crawl CDX index to discover billions of live URLs "

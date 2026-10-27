@@ -13,12 +13,15 @@ from services.common.models import CleanDocument, SearchHit
 from services.discovery.common_crawl import CommonCrawlClient
 from services.discovery.news_discovery import OpenNewsDiscovery
 from services.discovery.open_search import OpenKnowledgeDiscovery
+from services.discovery.tier_registry import DomainTierRegistry
 from services.extractor.chunker import chunk_document
 from services.extractor.trafilatura_cleaner import TrafilaturaCleaner
 from services.fetcher.http_client import AsyncHttpFetcher
 from services.indexer.base import AbstractSearchIndex
 from services.indexer.reranker import NeuralReranker
+from services.search.decomposer import QueryDecomposer, QueryDecomposition
 from services.search.serp_client import DuckDuckGoSerpClient
+from services.search.synthesizer import EvidenceSynthesisResult, EvidenceSynthesizer
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +35,15 @@ class AutonomousSearchResponse(BaseModel):
     discovered_urls: list[str] = []
     discovery_mode: str = "local_index"  # 'local_index' or 'autonomous_crawl'
     elapsed_seconds: float = 0.0
+    decomposition: QueryDecomposition | None = None
+    synthesis: EvidenceSynthesisResult | None = None
 
 
 class AutonomousSearchEngine:
     """100% self-contained autonomous search engine.
 
     Retrieves candidates using hybrid vector + lexical search, boosts candidates
-    with internal PageRank domain authority, applies cross-encoder neural reranking,
+    with internal PageRank domain authority and domain tier weighting, applies cross-encoder neural reranking,
     and autonomously bootstraps cold queries via open discovery without commercial SERPs.
     """
 
@@ -46,9 +51,13 @@ class AutonomousSearchEngine:
         self,
         index: AbstractSearchIndex,
         reranker: NeuralReranker | None = None,
+        decomposer: QueryDecomposer | None = None,
+        synthesizer: EvidenceSynthesizer | None = None,
     ) -> None:
         self.index = index
         self.reranker = reranker or NeuralReranker()
+        self.decomposer = decomposer or QueryDecomposer()
+        self.synthesizer = synthesizer or EvidenceSynthesizer()
         self.cleaner = TrafilaturaCleaner()
         self.http_fetcher = AsyncHttpFetcher(timeout=10.0)
         self.open_discovery = OpenKnowledgeDiscovery()
@@ -103,10 +112,12 @@ class AutonomousSearchEngine:
         limit: int = 5,
         max_tokens: int = 1500,
         allow_autonomous_discovery: bool = True,
+        decompose: bool = False,
+        synthesize: bool = False,
     ) -> AutonomousSearchResponse:
         """Execute autonomous search: query local hybrid index, apply PageRank authority boost,
 
-        cross-encoder reranking, and trigger open discovery if cold.
+        domain tier weighting, cross-encoder reranking, and trigger open discovery if cold.
         """
         import time
 
@@ -122,13 +133,41 @@ class AutonomousSearchEngine:
                 elapsed_seconds=0.0,
             )
 
+        decomposition: QueryDecomposition | None = None
+        if decompose or synthesize:
+            decomposition = self.decomposer.decompose(clean_query)
+
         # 1. Search local hybrid index (lexical + dense vector)
-        hits, _total_tokens = await self.index.search(
-            query=clean_query,
-            limit=limit * 3,
-            max_tokens=max_tokens * 2,
-            hybrid=True,
-        )
+        if decomposition and decomposition.sub_queries:
+            sub_queries_to_run = [clean_query] + [sq.query for sq in decomposition.sub_queries]
+            search_tasks = [
+                self.index.search(
+                    query=sq,
+                    limit=limit * 2,
+                    max_tokens=max_tokens * 2,
+                    hybrid=True,
+                )
+                for sq in sub_queries_to_run
+            ]
+            all_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+            candidate_dict: dict[str, SearchHit] = {}
+            for res in all_results:
+                if isinstance(res, tuple):
+                    sub_hits, _ = res
+                    for sh in sub_hits:
+                        if (
+                            sh.evidence_id not in candidate_dict
+                            or sh.score > candidate_dict[sh.evidence_id].score
+                        ):
+                            candidate_dict[sh.evidence_id] = sh
+            hits = list(candidate_dict.values())
+        else:
+            hits, _total_tokens = await self.index.search(
+                query=clean_query,
+                limit=limit * 3,
+                max_tokens=max_tokens * 2,
+                hybrid=True,
+            )
 
         discovery_mode = "local_index"
         discovered_urls: list[str] = []
@@ -188,6 +227,11 @@ class AutonomousSearchEngine:
 
         if not hits:
             elapsed = time.perf_counter() - t0
+            synthesis_res: EvidenceSynthesisResult | None = None
+            if synthesize:
+                intent = decomposition.intent if decomposition else self.decomposer.detect_intent(clean_query)
+                synthesis_res = self.synthesizer.synthesize(query=clean_query, hits=[], intent=intent)
+
             return AutonomousSearchResponse(
                 query=clean_query,
                 results=[],
@@ -197,15 +241,18 @@ class AutonomousSearchEngine:
                 discovered_urls=discovered_urls,
                 discovery_mode=discovery_mode,
                 elapsed_seconds=round(elapsed, 2),
+                decomposition=decomposition,
+                synthesis=synthesis_res,
             )
 
-        # 3. Apply PageRank / Domain Authority multiplier to candidate scores
+        # 3. Apply PageRank / Domain Authority and Domain Tier multiplier to candidate scores
         adjusted_hits: list[SearchHit] = []
         for h in hits:
             domain = (urllib.parse.urlsplit(h.url).hostname or "").lower()
             authority = await self.index.get_domain_authority(domain)
-            # Logarithmic authority boost: score * (1 + 0.35 * log(1 + authority))
-            authority_multiplier = 1.0 + (0.35 * math.log(1.0 + max(authority, 0.0)))
+            tier_mult = DomainTierRegistry.get_multiplier(domain)
+            # Logarithmic authority boost multiplied by domain tier multiplier
+            authority_multiplier = (1.0 + (0.35 * math.log(1.0 + max(authority, 0.0)))) * tier_mult
             new_score = h.score * authority_multiplier
             adjusted_hits.append(
                 SearchHit(
@@ -245,9 +292,18 @@ class AutonomousSearchEngine:
                 if len(final_hits) >= limit:
                     break
 
-        # 6. Build LLM Grounding Citations Markdown
+        # 6. Build LLM Grounding Citations Markdown & Optional Evidence Synthesis
         citations_md = CitationFormatter.format_markdown(final_hits)
         elapsed = time.perf_counter() - t0
+
+        synthesis_result: EvidenceSynthesisResult | None = None
+        if synthesize:
+            intent = decomposition.intent if decomposition else self.decomposer.detect_intent(clean_query)
+            synthesis_result = self.synthesizer.synthesize(
+                query=clean_query,
+                hits=final_hits,
+                intent=intent,
+            )
 
         return AutonomousSearchResponse(
             query=clean_query,
@@ -258,4 +314,23 @@ class AutonomousSearchEngine:
             discovered_urls=discovered_urls,
             discovery_mode=discovery_mode,
             elapsed_seconds=round(elapsed, 2),
+            decomposition=decomposition,
+            synthesis=synthesis_result,
+        )
+
+    async def search_evidence(
+        self,
+        query: str,
+        limit: int = 5,
+        max_tokens: int = 1500,
+        allow_autonomous_discovery: bool = True,
+    ) -> AutonomousSearchResponse:
+        """Convenience method executing full multi-angle query decomposition and cross-document evidence synthesis."""
+        return await self.search(
+            query=query,
+            limit=limit,
+            max_tokens=max_tokens,
+            allow_autonomous_discovery=allow_autonomous_discovery,
+            decompose=True,
+            synthesize=True,
         )
