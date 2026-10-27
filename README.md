@@ -14,12 +14,14 @@
 ## Key Highlights
 
 - **Decoupled 25x Concurrency Pipeline**: Asynchronous HTTP/2 fetchers with an isolated 3-worker Playwright Chromium pool providing automated fallback on JavaScript SPAs, 403/401/429/503 access challenges, and SSL negotiation failures.
+- **Autonomous Live Web Metasearch**: Real-time zero-API-key SERP discovery, on-the-fly parallel fetch, real-time vector embeddings, and cross-encoder neural rerank without needing prior crawling.
+- **Multi-Modal Vision & Dynamic Browser Actions**: High-resolution base64 PNG screenshot capture for vision LLMs (Claude 3.5 Sonnet, GPT-4o, Gemini 2.0) with automated action sequences (`click`, `scroll`, `wait`, `wait_for_selector`, `type`).
 - **SSRF & Intranet Defense**: Pre-flight DNS resolution blocking loopback, link-local, RFC1918 subnets, and cloud metadata services (`169.254.169.254`).
 - **Domain Politeness & Idempotency**: 24-hour cached `robots.txt` compliance, token bucket rate-limiting, domain concurrency leases, and deterministic `SHA256(URL + options)` deduplication.
 - **Precision Extraction & Sentence Chunking**: Trafilatura readability engine with aggressive boilerplate pruning (XPath navigation, header, footer, and social widget removal) and sentence-level windowing ($\le 1000$ chars / ~180 tokens) maintaining exact character offsets into original clean documents.
 - **Hybrid Retrieval & Neural Reranking**: PostgreSQL 16 `pgvector` HNSW index + FastEmbed ONNX (`BAAI/bge-small-en-v1.5`) dense semantic embeddings + FlashRank TinyBERT Cross-Encoder neural reranker + 64-bit SimHash near-duplicate deduplication.
 - **Model Context Protocol (MCP)**: Native stdio and HTTP/SSE JSON-RPC transports compatible with Claude Desktop, Cursor, Gemini CLI, and agent frameworks.
-- **Async & Sync REST Endpoints**: Synchronous `/v1/scrape`, Asynchronous `/v1/crawl` (with job ID progress polling), `/v1/map`, `/v1/extract`, and `/v1/search`.
+- **Async & Sync REST Endpoints**: Synchronous `/v1/scrape`, Live Metasearch `/v1/search/live`, Asynchronous `/v1/crawl`, `/v1/map`, `/v1/extract`, and `/v1/search`.
 
 ---
 
@@ -120,55 +122,62 @@ The web dashboard and OpenAPI documentation will be live at:
 
 ## REST API Reference
 
-### 1. Synchronous Live Scrape (`POST /v1/scrape`)
-Fetches and cleans a web page synchronously, with optional Playwright dynamic JS execution.
+### 1. Synchronous Live Scrape with Vision & Browser Actions (`POST /v1/scrape`)
+Fetches and cleans a web page synchronously. Supports automated UI interactions (`click`, `scroll`, `wait`, `type`) and captures high-resolution base64 PNG screenshots for vision-capable models (Claude 3.5 Sonnet, GPT-4o, Gemini 2.0):
 
 ```sh
-# Single-line PowerShell / Bash
-curl -X POST http://localhost:8000/v1/scrape -H "Content-Type: application/json" -d "{\"url\": \"https://simonwillison.net\", \"render_js\": false}"
+# Scrape with dynamic scroll and base64 screenshot
+curl -X POST http://localhost:8000/v1/scrape -H "Content-Type: application/json" -d "{\"url\": \"https://simonwillison.net\", \"render_js\": true, \"screenshot\": true, \"actions\": [{\"type\": \"scroll\", \"direction\": \"down\", \"amount\": 1000}, {\"type\": \"wait\", \"timeout\": 500}]}"
 ```
 
-### 2. Asynchronous Background Crawl (`POST /v1/crawl`)
+### 2. Autonomous Live Web Metasearch (`POST /v1/search/live`)
+Searches the live web in real time using zero-API-key DuckDuckGo SERP discovery, crawls top candidate URLs concurrently, cleans and indexes them into PostgreSQL (`pgvector`), and returns cross-encoder reranked evidence passages:
+
+```sh
+curl -X POST http://localhost:8000/v1/search/live -H "Content-Type: application/json" -d "{\"query\": \"Python 3.13 free threading PEP 703\", \"limit\": 5, \"live_crawl\": true}"
+```
+
+### 3. Asynchronous Background Crawl (`POST /v1/crawl`)
 Submits a crawl job that executes asynchronously, respecting domain politeness and rate limits. Returns a `job_id`.
 
 ```sh
-curl -X POST http://localhost:8000/v1/crawl -H "Content-Type: application/json" -d "{\"url\": \"https://simonwillison.net\", \"max_pages\": 20}"
+curl -X POST http://localhost:8000/v1/crawl -H "Content-Type: application/json" -d "{\"urls\": [\"https://simonwillison.net\"], \"max_pages\": 20}"
 ```
 
 **Response:**
 ```json
 {
-  "job_id": "crawl_7e44a2b918df",
+  "job_id": "job_7e44a2b918df",
   "status": "queued",
-  "seed_url": "https://simonwillison.net",
-  "message": "Crawl job accepted"
+  "enqueued": 1,
+  "poll_url": "/v1/jobs/job_7e44a2b918df"
 }
 ```
 
 Check job progress at any time:
 ```sh
-curl http://localhost:8000/v1/jobs/crawl_7e44a2b918df
+curl http://localhost:8000/v1/jobs/job_7e44a2b918df
 ```
 
-### 3. Domain Outlink & Sitemap Mapping (`POST /v1/map`)
+### 4. Domain Outlink & Sitemap Mapping (`POST /v1/map`)
 Discovers authoritative URLs and internal paths without scraping full page content:
 
 ```sh
 curl -X POST http://localhost:8000/v1/map -H "Content-Type: application/json" -d "{\"url\": \"https://simonwillison.net\", \"limit\": 50}"
 ```
 
-### 4. Structured Item Extraction (`POST /v1/extract`)
+### 5. Structured Item Extraction (`POST /v1/extract`)
 Extracts structured entity records using CSS selectors or JSON field definitions:
 
 ```sh
 curl -X POST http://localhost:8000/v1/extract -H "Content-Type: application/json" -d "{\"url\": \"https://news.ycombinator.com\", \"selectors\": {\"title\": \".titleline > a\", \"score\": \".score\"}}"
 ```
 
-### 5. Hybrid Semantic Search (`GET /v1/search`)
-Executes dense vector search combined with BM25 lexical matching, Reciprocal Rank Fusion (RRF), and FlashRank neural reranking:
+### 6. Hybrid Semantic Search (`POST /v1/search`)
+Executes dense vector search combined with BM25 lexical matching, Reciprocal Rank Fusion (RRF), and FlashRank neural reranking. Pass `live: true` to trigger automatic live web fallback if local index is cold:
 
 ```sh
-curl "http://localhost:8000/v1/search?q=prompt+engineering&limit=5&max_tokens=800"
+curl -X POST http://localhost:8000/v1/search -H "Content-Type: application/json" -d "{\"query\": \"prompt engineering evaluation\", \"limit\": 5, \"tokens\": 800, \"hybrid\": true, \"rerank\": true}"
 ```
 
 Each result contains:
@@ -183,10 +192,11 @@ Each result contains:
 Agent Search provides a native Model Context Protocol (MCP) server allowing direct integration with Claude Desktop, Cursor, Gemini CLI, and custom agent toolchains.
 
 ### Available MCP Tools
-- `search_passages`: Hybrid search with token limits and neural reranking.
+- `live_web_search`: Autonomous live web metasearch that queries the live internet, extracts and indexes content on the fly, and returns neural-reranked cited passages.
+- `search_passages`: Hybrid search across indexed documents with token limits and neural reranking.
 - `get_evidence_context`: Fetches neighboring context passages around any cited passage.
 - `get_document`: Retrieves the full document text by document ID or URL.
-- `fetch_live_page`: Live scrape with Trafilatura cleaning and optional Playwright JS execution.
+- `fetch_live_page`: Live scrape with Trafilatura cleaning, optional Playwright JS execution, UI action automation, and multimodal base64 screenshot capture.
 - `enqueue_crawl_url`: Queues URLs into the distributed crawler frontier.
 - `crawl_frontier_batch`: Executes a batch crawl from the pending URL queue.
 - `get_search_stats`: Reports index size, vector counts, cache hit rates, and worker statuses.
@@ -214,7 +224,7 @@ Or connect via the MCP HTTP endpoint at `http://localhost:8000/mcp`.
 The codebase includes an extensive automated test suite covering unit, integration, and security layers:
 
 ```sh
-# Run full pytest suite (77 tests)
+# Run full pytest suite (85 tests)
 pytest
 
 # Ruff linting check

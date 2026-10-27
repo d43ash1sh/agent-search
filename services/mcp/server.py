@@ -188,22 +188,34 @@ async def get_document(url: str) -> str:
 @mcp.tool(
     name="fetch_live_page",
     description=(
-        "Fetch an arbitrary live web URL on-demand using httpx and extract clean text, "
-        "markdown, and passage chunks in real-time."
+        "Fetch an arbitrary live web URL on-demand using httpx or Playwright and extract clean text, "
+        "markdown, passage chunks, and optional multi-modal base64 screenshots with browser action automation."
     ),
     annotations=ToolAnnotations(read_only_hint=True),
 )
-async def fetch_live_page(url: str, render_js: bool = False) -> str:
-    """Live-fetch and parse a web page on-demand with optional Playwright rendering."""
+async def fetch_live_page(
+    url: str,
+    render_js: bool = False,
+    screenshot: bool = False,
+    actions: list[dict[str, Any]] | None = None,
+) -> str:
+    """Live-fetch and parse a web page on-demand with optional Playwright rendering, screenshots, and actions."""
     cleaner = TrafilaturaCleaner()
     record = None
     failed = None
 
-    if render_js:
+    if render_js or screenshot or actions:
         from services.fetcher.browser_client import PlaywrightBrowserFetcher
 
         browser_fetcher = PlaywrightBrowserFetcher()
-        record, failed = await browser_fetcher.fetch(url)
+        try:
+            record, failed = await browser_fetcher.fetch(
+                url,
+                screenshot=screenshot,
+                actions=actions,
+            )
+        finally:
+            await browser_fetcher.close()
     else:
         fetcher = AsyncHttpFetcher()
         try:
@@ -232,26 +244,61 @@ async def fetch_live_page(url: str, render_js: bool = False) -> str:
     clean_text = extracted.get("clean_text", "")
     passages = chunk_document(url=url, text=clean_text)
 
-    return json.dumps(
-        {
-            "url": url,
-            "status_code": record.status_code,
-            "title": title,
-            "author": author,
-            "published_date": published_date,
-            "clean_text_preview": clean_text[:500],
-            "total_passages": len(passages),
-            "passages": [
-                {
-                    "evidence_id": p.passage_id,
-                    "text": p.text,
-                    "tokens": p.estimated_tokens,
-                }
-                for p in passages[:5]
-            ],
-        },
-        indent=2,
+    response_dict: dict[str, Any] = {
+        "url": url,
+        "status_code": record.status_code,
+        "title": title,
+        "author": author,
+        "published_date": published_date,
+        "clean_text_preview": clean_text[:500],
+        "total_passages": len(passages),
+        "passages": [
+            {
+                "evidence_id": p.passage_id,
+                "text": p.text,
+                "tokens": p.estimated_tokens,
+            }
+            for p in passages[:5]
+        ],
+    }
+    if record.screenshot_base64:
+        response_dict["screenshot_base64"] = record.screenshot_base64
+
+    return json.dumps(response_dict, indent=2)
+
+
+@mcp.tool(
+    name="live_web_search",
+    description=(
+        "Autonomous live web metasearch: searches the live web in real time via DuckDuckGo SERP, "
+        "crawls and cleans top source pages on the fly, computes dense vector embeddings, "
+        "indexes them into the database, and returns neural-reranked cited evidence passages."
+    ),
+    annotations=ToolAnnotations(read_only_hint=False),
+)
+async def live_web_search(
+    query: str,
+    limit: int = 5,
+    max_tokens: int = 1200,
+    hybrid: bool = True,
+    live_crawl: bool = True,
+) -> str:
+    """Execute live internet metasearch with on-the-fly crawling and neural reranking."""
+    from services.search.live_engine import LiveSearchEngine
+
+    index = get_search_index()
+    reranker = get_reranker()
+    engine = LiveSearchEngine(index=index, reranker=reranker)
+
+    res = await engine.search(
+        query=query,
+        limit=limit,
+        max_tokens=max_tokens,
+        hybrid=hybrid,
+        rerank=True,
+        live_crawl=live_crawl,
     )
+    return json.dumps(res.model_dump(), indent=2)
 
 
 @mcp.tool(

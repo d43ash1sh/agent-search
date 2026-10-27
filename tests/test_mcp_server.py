@@ -20,6 +20,7 @@ async def test_mcp_list_tools() -> None:
     assert "enqueue_crawl_url" in tool_names
     assert "crawl_frontier_batch" in tool_names
     assert "get_search_stats" in tool_names
+    assert "live_web_search" in tool_names
 
 
 @pytest.mark.anyio

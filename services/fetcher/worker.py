@@ -87,7 +87,11 @@ class FetcherWorker:
 
             if request.render_js:
                 # Explicit headless browser rendering requested
-                raw_record, failed_record = await self.browser_fetcher.fetch(request.url)
+                raw_record, failed_record = await self.browser_fetcher.fetch(
+                    request.url,
+                    screenshot=request.screenshot,
+                    actions=request.actions,
+                )
             else:
                 # 1. Primary fast HTTP fetch
                 raw_record, failed_record = await self.http_fetcher.fetch(request.url)

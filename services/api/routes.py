@@ -16,6 +16,7 @@ from services.common.models import FetchRequest, SearchHit
 from services.indexer.base import AbstractSearchIndex
 from services.indexer.reranker import NeuralReranker
 from services.queue.base import AbstractQueueBroker
+from services.search.live_engine import LiveSearchEngine, LiveSearchResponse
 
 router = APIRouter()
 JOBS_STORE: dict[str, dict[str, Any]] = {}
@@ -28,6 +29,16 @@ class SearchRequest(BaseModel):
     domains: list[str] = Field(default_factory=list)
     rerank: bool = False
     hybrid: bool = False
+    live: bool = False
+
+
+class LiveSearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+    tokens: int = 1200
+    hybrid: bool = True
+    rerank: bool = True
+    live_crawl: bool = True
 
 
 class SearchResponse(BaseModel):
@@ -115,6 +126,8 @@ class ExtractResponse(BaseModel):
 class ScrapeRequest(BaseModel):
     url: str
     render_js: bool = False
+    screenshot: bool = False
+    actions: list[dict[str, Any]] | None = None
 
 
 class ScrapeResponse(BaseModel):
@@ -123,6 +136,7 @@ class ScrapeResponse(BaseModel):
     title: str = ""
     markdown: str = ""
     html: str = ""
+    screenshot_base64: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     passages_count: int = 0
     error: str | None = None
@@ -161,6 +175,7 @@ def create_api_router(
     api = APIRouter()
     reranker = NeuralReranker()
     url_cache = cache or get_url_cache()
+    live_engine = LiveSearchEngine(index=index, reranker=reranker)
 
     @api.get("/", response_class=HTMLResponse)
     @api.get("/dashboard", response_class=HTMLResponse)
@@ -188,6 +203,23 @@ def create_api_router(
 
     @api.post("/v1/search", response_model=SearchResponse)
     async def search(req: SearchRequest) -> SearchResponse:
+        if req.live:
+            live_resp = await live_engine.search(
+                query=req.query,
+                limit=req.limit,
+                max_tokens=req.tokens,
+                hybrid=req.hybrid,
+                rerank=req.rerank,
+                live_crawl=True,
+            )
+            return SearchResponse(
+                query=live_resp.query,
+                estimated_tokens=live_resp.estimated_tokens,
+                max_tokens=live_resp.max_tokens,
+                results=live_resp.results,
+                citations_markdown=live_resp.citations_markdown,
+            )
+
         hits, total_tokens = await index.search(
             query=req.query,
             limit=req.limit,
@@ -210,6 +242,18 @@ def create_api_router(
             max_tokens=req.tokens,
             results=hits,
             citations_markdown=citations,
+        )
+
+    @api.post("/v1/search/live", response_model=LiveSearchResponse)
+    async def search_live(req: LiveSearchRequest) -> LiveSearchResponse:
+        """Autonomous metasearch: queries SERP, crawls unindexed pages, indexes pgvector, and reranks."""
+        return await live_engine.search(
+            query=req.query,
+            limit=req.limit,
+            max_tokens=req.tokens,
+            hybrid=req.hybrid,
+            rerank=req.rerank,
+            live_crawl=req.live_crawl,
         )
 
     @api.post("/v1/search/grounded", response_model=GroundedSearchResponse)
@@ -288,9 +332,16 @@ def create_api_router(
 
         raw_record = None
         failed = None
-        if req.render_js:
+        if req.render_js or req.screenshot or req.actions:
             browser_fetcher = PlaywrightBrowserFetcher()
-            raw_record, failed = await browser_fetcher.fetch(req.url)
+            try:
+                raw_record, failed = await browser_fetcher.fetch(
+                    req.url,
+                    screenshot=req.screenshot,
+                    actions=req.actions,
+                )
+            finally:
+                await browser_fetcher.close()
         else:
             http_fetcher = AsyncHttpFetcher()
             try:
@@ -309,6 +360,7 @@ def create_api_router(
                 status="ok",
                 url=req.url,
                 html=raw_record.raw_html,
+                screenshot_base64=raw_record.screenshot_base64,
                 error="No text extractable from page",
             )
 
@@ -319,6 +371,7 @@ def create_api_router(
             title=extracted["title"],
             markdown=extracted["markdown"],
             html=raw_record.raw_html,
+            screenshot_base64=raw_record.screenshot_base64,
             metadata={
                 "author": extracted.get("author"),
                 "date": extracted.get("published_date"),

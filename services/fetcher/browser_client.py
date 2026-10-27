@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 import time
@@ -95,7 +96,12 @@ class PlaywrightBrowserFetcher:
                         ) from err
         return self._browser
 
-    async def fetch(self, url: str) -> tuple[RawPageRecord | None, FailedFetchRecord | None]:
+    async def fetch(
+        self,
+        url: str,
+        screenshot: bool = False,
+        actions: list[dict[str, Any]] | None = None,
+    ) -> tuple[RawPageRecord | None, FailedFetchRecord | None]:
         """Fetch a webpage using an isolated Playwright browser worker slot with SSRF & timeout guards."""
         if settings.enable_ssrf_protection:
             safe, reason = is_ssrf_safe_url(url)
@@ -140,6 +146,46 @@ class PlaywrightBrowserFetcher:
                 with contextlib.suppress(Exception):
                     await page.wait_for_load_state("networkidle", timeout=2500)
 
+                # Execute dynamic actions sequence if requested by the agent
+                if actions:
+                    for act in actions:
+                        act_type = str(act.get("type", "")).lower()
+                        act_timeout = float(act.get("timeout", 5000))
+                        try:
+                            if act_type == "click":
+                                selector = str(act.get("selector", ""))
+                                if selector:
+                                    await page.locator(selector).first.click(timeout=act_timeout)
+                            elif act_type == "scroll":
+                                direction = str(act.get("direction", "down")).lower()
+                                amount = float(act.get("amount", 1000))
+                                delta_y = amount if direction == "down" else -amount
+                                await page.mouse.wheel(0, delta_y)
+                                await asyncio.sleep(0.3)
+                            elif act_type == "wait":
+                                ms = float(act.get("timeout", 1000))
+                                await asyncio.sleep(ms / 1000.0)
+                            elif act_type == "wait_for_selector":
+                                selector = str(act.get("selector", ""))
+                                if selector:
+                                    state = act.get("state", "visible")
+                                    await page.wait_for_selector(selector, state=state, timeout=act_timeout)
+                            elif act_type == "type":
+                                selector = str(act.get("selector", ""))
+                                text = str(act.get("text", ""))
+                                if selector and text:
+                                    await page.locator(selector).first.fill(text, timeout=act_timeout)
+                        except Exception as act_err:
+                            logger.debug("Browser action '%s' warning: %s", act_type, act_err)
+
+                screenshot_base64: str | None = None
+                if screenshot:
+                    try:
+                        shot_bytes = await page.screenshot(full_page=False, type="png")
+                        screenshot_base64 = base64.b64encode(shot_bytes).decode("ascii")
+                    except Exception as shot_err:
+                        logger.warning("Failed to capture screenshot for %s: %s", url, shot_err)
+
                 status_code = response.status if response else 200
                 rendered_html = await page.content()
                 canonical_url = page.url or url
@@ -160,6 +206,7 @@ class PlaywrightBrowserFetcher:
                     raw_html=rendered_html,
                     fetcher_engine="playwright",
                     elapsed_seconds=elapsed,
+                    screenshot_base64=screenshot_base64,
                 )
                 return record, None
 
