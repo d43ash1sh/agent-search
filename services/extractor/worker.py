@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from urllib.parse import urljoin, urlsplit
 
 from crawler.urls import host_is_allowed, normalize_url
 from services.cache.redis_cache import AbstractUrlCache, get_url_cache
+from services.common.config import settings
 from services.common.hashing import compute_sha256, compute_simhash
 from services.common.models import CleanDocument, FetchRequest, RawPageRecord
 from services.extractor.chunker import chunk_document
@@ -21,6 +23,43 @@ from services.queue.redis_broker import RedisQueueBroker
 logger = logging.getLogger(__name__)
 
 
+def is_listing_or_feed_url(url: str) -> bool:
+    """Detect if a URL is an aggregation, category, tag, archive, or pagination listing.
+
+    These pages are useful for discovering outlinks, but indexing them directly
+    creates confusing multi-article snippets for AI agents.
+    """
+    parsed = urlsplit(url)
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+
+    listing_path_patterns = (
+        "/tags/",
+        "/tag/",
+        "/category/",
+        "/categories/",
+        "/topics/",
+        "/topic/",
+        "/archive/",
+        "/archives/",
+        "/page/",
+        "/pages/",
+        "/author/",
+        "/authors/",
+        "/search",
+        "/feed",
+        "/rss",
+    )
+    if any(p in path for p in listing_path_patterns):
+        return True
+
+    if path.endswith(("/tags", "/category", "/archive", "/feed", "/rss.xml", "/atom.xml")):
+        return True
+
+    # Pagination query parameters: ?page=2, ?p=2, ?offset=
+    return bool(re.search(r"(?:^|&)(?:page|p|offset|paged)=\d+", query))
+
+
 class ExtractorWorker:
     """CPU-bound worker that extracts, chunks, deduplicates, and manages the URL frontier."""
 
@@ -30,12 +69,14 @@ class ExtractorWorker:
         index: AbstractSearchIndex | None = None,
         sqlite_path: str | None = None,
         cache: AbstractUrlCache | None = None,
+        concurrency: int | None = None,
     ) -> None:
         self.broker = broker
         self.trafilatura = TrafilaturaCleaner()
         self.fallback = FallbackCleaner()
         self.dedup = DeduplicationFilter()
         self.cache = cache or get_url_cache()
+        self.concurrency = concurrency or settings.extractor_concurrency
         if index is not None:
             self.index: AbstractSearchIndex = index
         elif sqlite_path:
@@ -101,6 +142,14 @@ class ExtractorWorker:
 
     def process_record(self, raw: RawPageRecord) -> CleanDocument | None:
         """Process a single raw HTML payload into a CleanDocument."""
+        # Skip indexing listing / tag / archive pages to prevent multi-article aggregation noise
+        force_index = bool(raw.metadata and raw.metadata.get("force_index"))
+        if not force_index and is_listing_or_feed_url(raw.url):
+            logger.info(
+                "Skipping document indexing for listing/feed page: %s (used for link discovery only)", raw.url
+            )
+            return None
+
         extracted = self.trafilatura.extract(raw.raw_html, raw.url)
         if not extracted:
             extracted = self.fallback.extract(raw.raw_html, raw.url)
@@ -228,14 +277,37 @@ class ExtractorWorker:
             logger.error("Extraction error for %s: %s", raw.url, error, exc_info=True)
             return False
 
-    async def run_loop(self) -> None:
-        """Continuously process items from the staging queue."""
-        self.is_running = True
-        logger.info("Extractor worker started.")
+    async def _consumer_loop(self, worker_id: int) -> None:
+        """Parallel consumer routine extracting from staging queue."""
         while self.is_running:
-            processed = await self.run_once()
-            if not processed:
-                await asyncio.sleep(0.1)
+            try:
+                processed = await self.run_once()
+                if not processed:
+                    await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Extractor consumer %d error: %s", worker_id, exc)
+                await asyncio.sleep(0.5)
+
+    async def run_loop(self, concurrency: int | None = None) -> None:
+        """Continuously process items from the staging queue with parallel consumers."""
+        num_workers = concurrency or self.concurrency
+        self.is_running = True
+        logger.info("Extractor worker started with %d parallel consumers.", num_workers)
+        if num_workers <= 1:
+            while self.is_running:
+                processed = await self.run_once()
+                if not processed:
+                    await asyncio.sleep(0.1)
+        else:
+            consumers = [asyncio.create_task(self._consumer_loop(i)) for i in range(num_workers)]
+            try:
+                await asyncio.gather(*consumers)
+            except asyncio.CancelledError:
+                for c in consumers:
+                    c.cancel()
+                await asyncio.gather(*consumers, return_exceptions=True)
 
     async def close(self) -> None:
         self.is_running = False

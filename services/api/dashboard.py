@@ -272,9 +272,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <h3 style="font-size: 1.15rem;">Cross-Site URL Frontier</h3>
                         <p style="color: var(--text-muted); font-size: 0.85rem;">Ledger of URLs discovered across external hyperlinks. You can enqueue them to crawl new websites.</p>
                     </div>
-                    <div style="display: flex; gap: 0.75rem; align-items: center;">
+                    <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Batch:</span>
+                        <select id="frontier-batch-size" style="background: #0b1120; border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.85rem;" onchange="updateCrawlBtnLabel()">
+                            <option value="25">25 URLs</option>
+                            <option value="50">50 URLs</option>
+                            <option value="100" selected>100 URLs</option>
+                            <option value="250">250 URLs</option>
+                            <option value="500">500 URLs</option>
+                            <option value="1000">1,000 URLs</option>
+                            <option value="5000">5,000 URLs</option>
+                        </select>
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Max/Domain:</span>
+                        <input type="number" id="frontier-max-per-domain" value="5" min="1" max="50" style="background: #0b1120; border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 6px; width: 60px; font-size: 0.85rem;" />
                         <button class="btn-outline" onclick="loadFrontierData()">Refresh</button>
-                        <button class="btn" onclick="crawlFrontier()">Crawl 25 Discovered URLs</button>
+                        <button class="btn" id="frontier-crawl-btn" onclick="crawlFrontier()">Crawl 100 Discovered URLs</button>
                     </div>
                 </div>
 
@@ -350,9 +362,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <!-- TAB 4: Queue Telemetry -->
         <div id="tab-queues" class="tab-pane">
             <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <h3>Real-Time Queue Telemetry</h3>
-                    <button class="btn" style="padding: 0.5rem 1rem;" onclick="loadQueueStatus()">Refresh Now</button>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+                    <div>
+                        <h3>Real-Time Queue Telemetry</h3>
+                        <p style="color: var(--text-muted); font-size: 0.85rem;">Pipeline queues: 25x parallel fetchers drain backlog into staging & indexing.</p>
+                    </div>
+                    <div style="display: flex; gap: 0.75rem;">
+                        <button class="btn-outline" style="border-color: var(--danger); color: var(--danger);" onclick="clearQueueBacklog()">Flush / Clear Fetch Queue</button>
+                        <button class="btn" style="padding: 0.5rem 1rem;" onclick="loadQueueStatus()">Refresh Now</button>
+                    </div>
                 </div>
                 <div id="queue-status-box" class="code-block">Loading telemetry...</div>
             </div>
@@ -430,14 +448,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
         }
 
+        function updateCrawlBtnLabel() {
+            const batch = document.getElementById('frontier-batch-size')?.value || '100';
+            const btn = document.getElementById('frontier-crawl-btn');
+            if (btn) btn.innerText = `Crawl ${Number(batch).toLocaleString()} Discovered URLs`;
+        }
+
         async function crawlFrontier() {
             const alertBox = document.getElementById('frontier-alert');
             alertBox.style.display = 'none';
+            const limit = parseInt(document.getElementById('frontier-batch-size')?.value || '100', 10);
+            const maxPerDomain = parseInt(document.getElementById('frontier-max-per-domain')?.value || '5', 10);
+            const btn = document.getElementById('frontier-crawl-btn');
+            if (btn) { btn.disabled = true; btn.innerText = 'Enqueuing...'; }
             try {
                 const res = await fetch('/v1/frontier/crawl', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ limit: 25, max_per_domain: 5 })
+                    body: JSON.stringify({ limit: limit, max_per_domain: maxPerDomain })
                 });
                 const data = await res.json();
                 alertBox.className = 'alert success';
@@ -450,6 +478,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 alertBox.className = 'alert error';
                 alertBox.innerText = `Frontier crawl failed: ${e.message}`;
                 alertBox.style.display = 'block';
+            } finally {
+                if (btn) { btn.disabled = false; updateCrawlBtnLabel(); }
+            }
+        }
+
+        async function clearQueueBacklog() {
+            if (!confirm('Are you sure you want to flush and clear the fetch queue backlog?')) return;
+            try {
+                const res = await fetch('/v1/queue/clear?queue_name=fetch', { method: 'POST' });
+                const data = await res.json();
+                alert(`Purged ${data.purged?.fetch || 0} queued URLs from fetch queue.`);
+                loadQueueStatus();
+                fetchStats();
+            } catch (e) {
+                alert(`Failed to clear queue: ${e.message}`);
             }
         }
 

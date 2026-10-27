@@ -5,7 +5,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import redis
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from services.api.routes import create_api_router
 from services.cache.redis_cache import get_url_cache
@@ -59,6 +60,21 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(ConnectionRefusedError)
+async def connection_refused_handler(request: Request, exc: ConnectionRefusedError) -> JSONResponse:
+    logger.warning("Downstream connection refused on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": "service_unavailable",
+            "error": "Downstream database or broker service refused connection",
+            "detail": str(exc),
+            "suggestion": "Ensure Docker Desktop is running and PostgreSQL/Redis containers are active.",
+        },
+    )
+
 
 api_router = create_api_router(broker, index, cache=cache)
 app.include_router(api_router)

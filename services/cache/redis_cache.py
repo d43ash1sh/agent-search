@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -14,6 +15,14 @@ from services.common.hashing import compute_sha256
 from services.common.models import RawPageRecord
 
 logger = logging.getLogger(__name__)
+
+
+def make_cache_key(url: str, render_js: bool = False, options: dict[str, Any] | None = None) -> str:
+    """Compute deterministic hash of URL + options for idempotent job deduplication."""
+    parts = [url, f"js={int(render_js)}"]
+    if options:
+        parts.append(json.dumps(options, sort_keys=True))
+    return compute_sha256(":".join(parts))
 
 
 class AbstractUrlCache(ABC):
@@ -36,19 +45,21 @@ class AbstractUrlCache(ABC):
         """Filter a list of URLs returning only those that have NOT been seen yet."""
 
     @abstractmethod
-    async def get_cached_page(self, url: str) -> RawPageRecord | None:
+    async def get_cached_page(self, url: str, cache_key: str | None = None) -> RawPageRecord | None:
         """Retrieve cached HTTP response record for a URL if present and unexpired."""
 
     @abstractmethod
-    async def set_cached_page(self, record: RawPageRecord, ttl: int | None = None) -> None:
+    async def set_cached_page(
+        self, record: RawPageRecord, ttl: int | None = None, cache_key: str | None = None
+    ) -> None:
         """Store raw fetched page in cache with a TTL."""
 
     @abstractmethod
-    async def acquire_crawl_lock(self, url: str, ttl: int = 60) -> bool:
+    async def acquire_crawl_lock(self, url: str, ttl: int = 60, lock_key: str | None = None) -> bool:
         """Acquire an in-flight crawl lock to prevent multiple workers fetching the same URL concurrently."""
 
     @abstractmethod
-    async def release_crawl_lock(self, url: str) -> None:
+    async def release_crawl_lock(self, url: str, lock_key: str | None = None) -> None:
         """Release an in-flight crawl lock for a URL."""
 
     @abstractmethod
@@ -102,8 +113,8 @@ class InMemoryUrlCache(AbstractUrlCache):
                 unseen.append(u)
         return unseen
 
-    async def get_cached_page(self, url: str) -> RawPageRecord | None:
-        key = compute_sha256(url)
+    async def get_cached_page(self, url: str, cache_key: str | None = None) -> RawPageRecord | None:
+        key = cache_key or compute_sha256(url)
         now = time.monotonic()
         item = self._page_cache.get(key)
         if item is not None:
@@ -115,14 +126,16 @@ class InMemoryUrlCache(AbstractUrlCache):
         self._misses += 1
         return None
 
-    async def set_cached_page(self, record: RawPageRecord, ttl: int | None = None) -> None:
-        key = compute_sha256(record.url)
+    async def set_cached_page(
+        self, record: RawPageRecord, ttl: int | None = None, cache_key: str | None = None
+    ) -> None:
+        key = cache_key or compute_sha256(record.url)
         lifetime = ttl or settings.page_cache_ttl_seconds
         expire_at = time.monotonic() + lifetime
         self._page_cache[key] = (record, expire_at)
 
-    async def acquire_crawl_lock(self, url: str, ttl: int = 60) -> bool:
-        key = compute_sha256(url)
+    async def acquire_crawl_lock(self, url: str, ttl: int = 60, lock_key: str | None = None) -> bool:
+        key = lock_key or compute_sha256(url)
         now = time.monotonic()
         async with self._lock:
             if key in self._locks and now < self._locks[key]:
@@ -130,8 +143,8 @@ class InMemoryUrlCache(AbstractUrlCache):
             self._locks[key] = now + ttl
             return True
 
-    async def release_crawl_lock(self, url: str) -> None:
-        key = compute_sha256(url)
+    async def release_crawl_lock(self, url: str, lock_key: str | None = None) -> None:
+        key = lock_key or compute_sha256(url)
         async with self._lock:
             self._locks.pop(key, None)
 
@@ -234,8 +247,9 @@ class RedisUrlCache(AbstractUrlCache):
             logger.warning("Redis filter_unseen_urls failed: %s", exc)
             return urls
 
-    async def get_cached_page(self, url: str) -> RawPageRecord | None:
-        key = f"{self.PAGE_KEY_PREFIX}{compute_sha256(url)}"
+    async def get_cached_page(self, url: str, cache_key: str | None = None) -> RawPageRecord | None:
+        raw_key = cache_key or compute_sha256(url)
+        key = f"{self.PAGE_KEY_PREFIX}{raw_key}"
         try:
             client = await self._get_client()
             payload = await client.get(key)
@@ -248,8 +262,11 @@ class RedisUrlCache(AbstractUrlCache):
             logger.debug("Redis get_cached_page miss or error for %s: %s", url, exc)
             return None
 
-    async def set_cached_page(self, record: RawPageRecord, ttl: int | None = None) -> None:
-        key = f"{self.PAGE_KEY_PREFIX}{compute_sha256(record.url)}"
+    async def set_cached_page(
+        self, record: RawPageRecord, ttl: int | None = None, cache_key: str | None = None
+    ) -> None:
+        raw_key = cache_key or compute_sha256(record.url)
+        key = f"{self.PAGE_KEY_PREFIX}{raw_key}"
         lifetime = ttl or settings.page_cache_ttl_seconds
         try:
             client = await self._get_client()
@@ -257,9 +274,10 @@ class RedisUrlCache(AbstractUrlCache):
         except Exception as exc:
             logger.warning("Redis set_cached_page failed for %s: %s", record.url, exc)
 
-    async def acquire_crawl_lock(self, url: str, ttl: int = 60) -> bool:
+    async def acquire_crawl_lock(self, url: str, ttl: int = 60, lock_key: str | None = None) -> bool:
         """Atomic lock using SET with NX and EX to prevent duplicate concurrent crawls."""
-        key = f"{self.LOCK_KEY_PREFIX}{compute_sha256(url)}"
+        raw_key = lock_key or compute_sha256(url)
+        key = f"{self.LOCK_KEY_PREFIX}{raw_key}"
         try:
             client = await self._get_client()
             acquired = await client.set(key, "1", nx=True, ex=ttl)
@@ -268,8 +286,9 @@ class RedisUrlCache(AbstractUrlCache):
             logger.warning("Redis acquire_crawl_lock error for %s: %s", url, exc)
             return True  # Proceed if lock check fails
 
-    async def release_crawl_lock(self, url: str) -> None:
-        key = f"{self.LOCK_KEY_PREFIX}{compute_sha256(url)}"
+    async def release_crawl_lock(self, url: str, lock_key: str | None = None) -> None:
+        raw_key = lock_key or compute_sha256(url)
+        key = f"{self.LOCK_KEY_PREFIX}{raw_key}"
         try:
             client = await self._get_client()
             await client.delete(key)

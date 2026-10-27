@@ -9,7 +9,6 @@ import sys
 import redis
 import uvicorn
 
-from services.api.server import app, index
 from services.common.config import settings
 from services.common.docker_manager import (
     ensure_infrastructure_online,
@@ -54,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Automatically stop Docker compose containers when run_all.py is terminated.",
     )
+    parser.add_argument(
+        "--playwright-workers",
+        type=int,
+        default=settings.playwright_workers,
+        help="Number of concurrent Playwright browser rendering workers (default: 3).",
+    )
     return parser.parse_args()
 
 
@@ -77,6 +82,8 @@ async def main() -> None:
         return
 
     # 2. Detect broker (Redis or in-memory fallback)
+    from services.api.server import app, index
+
     active_broker: AbstractQueueBroker
     try:
         r = redis.from_url(settings.redis_url, socket_timeout=2.0)
@@ -88,7 +95,7 @@ async def main() -> None:
         active_broker = InMemoryQueueBroker()
 
     # 3. Initialize workers
-    fetcher = FetcherWorker(broker=active_broker)
+    fetcher = FetcherWorker(broker=active_broker, playwright_workers=args.playwright_workers)
     extractor = ExtractorWorker(broker=active_broker, index=index)
     indexer = IndexerWorker(broker=active_broker, index=index)
 
@@ -101,13 +108,26 @@ async def main() -> None:
     )
     server = uvicorn.Server(config)
 
+    effective_backend = (
+        "POSTGRES" if index.__class__.__name__ == "PostgresSearchIndex" else "SQLITE (fallback)"
+    )
     logger.info("==================================================================")
     logger.info(" Agent Search Engine: All services starting up...")
-    logger.info("   - Storage Backend:   %s", settings.index_backend.upper())
+    logger.info("   - Storage Backend:   %s", effective_backend)
     logger.info("   - Queue Broker:      %s", active_broker.__class__.__name__)
-    logger.info("   - Fetcher Service:   ACTIVE (httpx + Playwright fallback)")
-    logger.info("   - Extractor Service: ACTIVE (Trafilatura + SimHash + URL Frontier)")
-    logger.info("   - Indexer Service:   ACTIVE (Hybrid pgvector / FTS5 + Neural Reranker)")
+    logger.info(
+        "   - Fetcher Service:   ACTIVE (%dx HTTP Consumers + %dx Playwright Browser Workers)",
+        settings.fetcher_concurrency,
+        args.playwright_workers,
+    )
+    logger.info(
+        "   - Extractor Service: ACTIVE (%dx Parallel Consumers | Trafilatura + Frontier)",
+        settings.extractor_concurrency,
+    )
+    logger.info(
+        "   - Indexer Service:   ACTIVE (%dx Parallel Consumers | Hybrid pgvector / FTS5)",
+        settings.indexer_concurrency,
+    )
     logger.info("   - API Service:       ACTIVE (http://%s:%d)", settings.api_host, settings.api_port)
     logger.info("   - Interactive Docs:  http://localhost:%d/docs", settings.api_port)
     logger.info("==================================================================")

@@ -15,8 +15,26 @@ logging.getLogger("trafilatura.htmlprocessing").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_PRUNE_XPATH: list[str] = [
+    "//nav",
+    "//footer",
+    "//header",
+    "//aside",
+    "//*[contains(@class, 'sidebar')]",
+    "//*[contains(@class, 'pagination')]",
+    "//*[contains(@class, 'breadcrumb')]",
+    "//*[contains(@class, 'tags')]",
+    "//*[contains(@class, 'share')]",
+    "//*[contains(@class, 'social')]",
+    "//*[contains(@class, 'advert')]",
+    "//*[contains(@id, 'comments')]",
+    "//*[contains(@class, 'comment')]",
+    "//ul[contains(@class, 'menu')]",
+]
+
+
 def sanitize_markdown(text: str) -> str:
-    """Sanitize extracted markdown by removing raw HTML artifacts and anchor noise."""
+    """Sanitize extracted markdown by removing raw HTML artifacts, image banners, and anchor noise."""
     if not text:
         return ""
 
@@ -28,14 +46,17 @@ def sanitize_markdown(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
-    # 2. Strip permalink anchors like [¶](...), [#](...), [](url), and glyphs
+    # 2. Strip embedded images and badges: ![alt](url) -> ""
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text)
+
+    # 3. Strip permalink anchors like [¶](...), [#](...), [](url), and glyphs
     text = re.sub(r"\[(?:[¶#§]|\s*)\]\([^)]+\)", "", text)
     text = re.sub(r"[¶\uf0c1\u200b\ufeff]", "", text)
 
-    # 3. Strip empty links like [](...)
+    # 4. Strip empty links like [](...)
     text = re.sub(r"\[\s*\]\([^)]+\)", "", text)
 
-    # 4. Collapse 3+ newlines to 2 newlines (markdown paragraph separation)
+    # 5. Collapse 3+ newlines to 2 newlines (markdown paragraph separation)
     text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
@@ -53,8 +74,9 @@ def extract_clean_markdown(raw_html: str, url: str) -> dict[str, Any] | None:
             output_format="markdown",
             include_formatting=True,
             include_tables=True,
-            include_links=True,
+            include_links=False,
             favor_precision=True,
+            prune_xpath=DEFAULT_PRUNE_XPATH,
         )
         if not markdown or not markdown.strip():
             return None

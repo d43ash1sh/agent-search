@@ -54,20 +54,24 @@ async def test_postgres_index_and_search(pg_index: PostgresSearchIndex) -> None:
     doc_url = f"https://postgres-test.example.com/guide-{unique_suffix}"
     passage_id = f"ev_pg_{unique_suffix}"
 
+    passage_text = (
+        f"PostgreSQL with pgvector allows fast approximate nearest neighbor search "
+        f"and BM25-like tsvector ranking for unique test passage {unique_suffix}."
+    )
     doc = CleanDocument(
         url=doc_url,
         canonical_url=doc_url,
         title=f"PostgreSQL Distributed Guide {unique_suffix}",
-        clean_text="PostgreSQL with pgvector allows fast approximate nearest neighbor search and BM25-like tsvector ranking.",
+        clean_text=passage_text,
         passages=[
             PassageChunk(
                 passage_id=passage_id,
                 document_url=doc_url,
                 order_index=0,
                 start_char=0,
-                end_char=95,
-                text="PostgreSQL with pgvector allows fast approximate nearest neighbor search and BM25-like tsvector ranking.",
-                estimated_tokens=22,
+                end_char=len(passage_text),
+                text=passage_text,
+                estimated_tokens=25,
                 content_hash=f"hash_{unique_suffix}",
             )
         ],
@@ -83,32 +87,51 @@ async def test_postgres_index_and_search(pg_index: PostgresSearchIndex) -> None:
     assert "pgvector" in evidence.text
 
     # Search with hybrid=False (lexical tsvector)
-    hits_lexical, tokens = await pg_index.search(query="approximate nearest neighbor", limit=5)
+    hits_lexical, tokens = await pg_index.search(
+        query=f"approximate nearest neighbor {unique_suffix}",
+        domains=["postgres-test.example.com"],
+        limit=5,
+        hybrid=False,
+    )
     assert len(hits_lexical) >= 1
     assert any(h.evidence_id == passage_id for h in hits_lexical)
     assert tokens > 0
 
     # Search with hybrid=True (dense vector + lexical RRF)
-    hits_hybrid, _ = await pg_index.search(query="pgvector approximate neighbor", limit=5, hybrid=True)
+    hits_hybrid, _ = await pg_index.search(
+        query=f"pgvector approximate neighbor {unique_suffix}",
+        domains=["postgres-test.example.com"],
+        limit=5,
+        hybrid=True,
+    )
     assert len(hits_hybrid) >= 1
     assert any(h.evidence_id == passage_id for h in hits_hybrid)
 
 
 @pytest.mark.anyio
 async def test_postgres_unsigned_64bit_simhash(pg_index: PostgresSearchIndex) -> None:
-    large_simhash = 14720958193186661231
-    doc_url = f"https://example.com/large-simhash-{uuid.uuid4().hex[:6]}"
-    doc = CleanDocument(
-        url=doc_url,
-        canonical_url=doc_url,
-        title="Large SimHash Test",
-        clean_text="SimHash values in Python can reach up to 2^64-1 without overflowing PostgreSQL numeric.",
-        simhash=large_simhash,
-        content_hash="hash_simhash_test",
-    )
-    await pg_index.index_document(doc)
-    # Re-index to test ON CONFLICT UPDATE path with large simhash
-    await pg_index.index_document(doc)
+    # Test with exact values reported in live crawl overflow errors
+    test_simhashes = [
+        14454562975676966686,
+        12435559112285661429,
+        10363923691107606715,
+        10215408779451196395,
+        14720958193186661231,
+        (1 << 64) - 1,  # 18446744073709551615 (max uint64)
+    ]
+    for simhash_val in test_simhashes:
+        doc_url = f"https://example.com/large-simhash-{uuid.uuid4().hex[:6]}"
+        doc = CleanDocument(
+            url=doc_url,
+            canonical_url=doc_url,
+            title="Large SimHash Test",
+            clean_text="SimHash values in Python can reach up to 2^64-1 without overflowing PostgreSQL signed int64 range.",
+            simhash=simhash_val,
+            content_hash=f"hash_{uuid.uuid4().hex[:6]}",
+        )
+        await pg_index.index_document(doc)
+        # Re-index to test ON CONFLICT UPDATE path with large simhash
+        await pg_index.index_document(doc)
 
 
 @pytest.mark.anyio

@@ -11,6 +11,7 @@ from pgvector import Vector
 from pgvector.asyncpg import register_vector
 
 from services.common.config import settings
+from services.common.hashing import to_signed_int64
 from services.common.models import CleanDocument, SearchHit
 from services.indexer.base import AbstractSearchIndex
 from services.indexer.reranker import NeuralReranker
@@ -44,6 +45,16 @@ class PostgresSearchIndex(AbstractSearchIndex):
 
     async def get_pool(self) -> asyncpg.Pool:
         """Lazily initialize and return the asyncpg connection pool."""
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self.pool is not None and (
+                getattr(self.pool, "_loop", None) != current_loop or self.pool._loop.is_closed()
+            ):
+                self.pool = None
+                self._initialized = False
+        except RuntimeError:
+            pass
+
         if self.pool is None:
             async with self._init_lock:
                 if self.pool is None:
@@ -175,7 +186,7 @@ class PostgresSearchIndex(AbstractSearchIndex):
                 doc.sitename,
                 doc.description,
                 doc.content_hash,
-                int(doc.simhash or 0),
+                to_signed_int64(doc.simhash),
             )
 
             # 2. Delete existing passages for this document
@@ -235,7 +246,12 @@ class PostgresSearchIndex(AbstractSearchIndex):
         hybrid: bool = True,
     ) -> tuple[list[SearchHit], int]:
         """Execute hybrid search combining PostgreSQL tsvector and pgvector HNSW distance."""
-        pool = await self.get_pool()
+        try:
+            pool = await self.get_pool()
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL search unavailable (connection issue: %s)", exc)
+            return [], 0
+
         query_str = query.strip()
         if not query_str:
             return [], 0
@@ -341,7 +357,12 @@ class PostgresSearchIndex(AbstractSearchIndex):
 
     async def get_evidence(self, evidence_id: str) -> SearchHit | None:
         """Retrieve single evidence passage by ID."""
-        pool = await self.get_pool()
+        try:
+            pool = await self.get_pool()
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL get_evidence unavailable (connection issue: %s)", exc)
+            return None
+
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -370,75 +391,114 @@ class PostgresSearchIndex(AbstractSearchIndex):
 
     async def get_stats(self) -> dict[str, Any]:
         """Return PostgreSQL database metrics and index status."""
-        pool = await self.get_pool()
-        async with pool.acquire() as conn:
-            doc_count = await conn.fetchval("SELECT count(*) FROM documents")
-            passage_count = await conn.fetchval("SELECT count(*) FROM passages")
-            domain_count = await conn.fetchval("SELECT count(DISTINCT domain) FROM documents")
-            db_size = await conn.fetchval("SELECT pg_database_size(current_database())")
+        try:
+            pool = await self.get_pool()
+            async with pool.acquire() as conn:
+                doc_count = await conn.fetchval("SELECT count(*) FROM documents")
+                passage_count = await conn.fetchval("SELECT count(*) FROM passages")
+                domain_count = await conn.fetchval("SELECT count(DISTINCT domain) FROM documents")
+                db_size = await conn.fetchval("SELECT pg_database_size(current_database())")
 
+                return {
+                    "backend": "postgresql",
+                    "status": "online",
+                    "exists": True,
+                    "database_name": "agent_search",
+                    "size_bytes": db_size or 0,
+                    "total_documents": doc_count or 0,
+                    "document_count": doc_count or 0,
+                    "total_passages": passage_count or 0,
+                    "passage_count": passage_count or 0,
+                    "total_domains": domain_count or 0,
+                    "pgvector_enabled": True,
+                }
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL get_stats unavailable (connection issue: %s)", exc)
             return {
                 "backend": "postgresql",
-                "exists": True,
-                "database_name": "agent_search",
-                "size_bytes": db_size or 0,
-                "total_documents": doc_count or 0,
-                "document_count": doc_count or 0,
-                "total_passages": passage_count or 0,
-                "passage_count": passage_count or 0,
-                "total_domains": domain_count or 0,
-                "pgvector_enabled": True,
+                "status": "offline",
+                "exists": False,
+                "error": f"PostgreSQL unavailable: {exc}",
+                "total_documents": 0,
+                "document_count": 0,
+                "total_passages": 0,
+                "passage_count": 0,
+                "total_domains": 0,
+                "pgvector_enabled": False,
             }
 
     async def record_frontier_urls(self, records: list[dict[str, Any]]) -> int:
         """Persist newly discovered URLs in the frontier ledger."""
         if not records:
             return 0
-        pool = await self.get_pool()
-        items: list[tuple[Any, ...]] = []
-        for r in records:
-            url = r["url"]
-            domain = r.get("domain") or (urlsplit(url).hostname or "").lower()
-            source = r.get("source_url", "")
-            depth = r.get("depth", 0)
-            status = r.get("status", "discovered")
-            items.append((url, domain, source, depth, status))
+        try:
+            pool = await self.get_pool()
+            items: list[tuple[Any, ...]] = []
+            for r in records:
+                url = r["url"]
+                domain = r.get("domain") or (urlsplit(url).hostname or "").lower()
+                source = r.get("source_url", "")
+                depth = r.get("depth", 0)
+                status = r.get("status", "discovered")
+                items.append((url, domain, source, depth, status))
 
-        async with pool.acquire() as conn:
-            await conn.executemany(
-                """
-                INSERT INTO frontier_urls (url, domain, source_url, depth, status, discovered_at)
-                VALUES ($1, $2, $3, $4, $5, NOW())
-                ON CONFLICT (url) DO NOTHING;
-                """,
-                items,
-            )
-        return len(items)
+            async with pool.acquire() as conn:
+                await conn.executemany(
+                    """
+                    INSERT INTO frontier_urls (url, domain, source_url, depth, status, discovered_at)
+                    VALUES ($1, $2, $3, $4, $5, NOW())
+                    ON CONFLICT (url) DO NOTHING;
+                    """,
+                    items,
+                )
+            return len(items)
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL record_frontier_urls unavailable: %s", exc)
+            return 0
 
     async def update_frontier_status(self, url: str, status: str) -> None:
         """Update crawl status of a URL in the frontier ledger."""
-        pool = await self.get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute("UPDATE frontier_urls SET status = $1 WHERE url = $2", status, url)
+        try:
+            pool = await self.get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("UPDATE frontier_urls SET status = $1 WHERE url = $2", status, url)
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL update_frontier_status unavailable: %s", exc)
 
     async def get_frontier_stats(self) -> dict[str, Any]:
         """Return frontier ledger summary statistics."""
-        pool = await self.get_pool()
-        async with pool.acquire() as conn:
-            total = await conn.fetchval("SELECT count(*) FROM frontier_urls") or 0
-            domains = await conn.fetchval("SELECT count(DISTINCT domain) FROM frontier_urls") or 0
-            discovered = (
-                await conn.fetchval("SELECT count(*) FROM frontier_urls WHERE status = 'discovered'") or 0
-            )
-            queued = await conn.fetchval("SELECT count(*) FROM frontier_urls WHERE status = 'queued'") or 0
-            crawled = await conn.fetchval("SELECT count(*) FROM frontier_urls WHERE status = 'crawled'") or 0
+        try:
+            pool = await self.get_pool()
+            async with pool.acquire() as conn:
+                total = await conn.fetchval("SELECT count(*) FROM frontier_urls") or 0
+                domains = await conn.fetchval("SELECT count(DISTINCT domain) FROM frontier_urls") or 0
+                discovered = (
+                    await conn.fetchval("SELECT count(*) FROM frontier_urls WHERE status = 'discovered'") or 0
+                )
+                queued = (
+                    await conn.fetchval("SELECT count(*) FROM frontier_urls WHERE status = 'queued'") or 0
+                )
+                crawled = (
+                    await conn.fetchval("SELECT count(*) FROM frontier_urls WHERE status = 'crawled'") or 0
+                )
 
+                return {
+                    "total_discovered": total,
+                    "total_domains": domains,
+                    "discovered": discovered,
+                    "queued": queued,
+                    "crawled": crawled,
+                    "status": "online",
+                }
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL get_frontier_stats unavailable: %s", exc)
             return {
-                "total_discovered": total,
-                "total_domains": domains,
-                "discovered": discovered,
-                "queued": queued,
-                "crawled": crawled,
+                "total_discovered": 0,
+                "total_domains": 0,
+                "discovered": 0,
+                "queued": 0,
+                "crawled": 0,
+                "status": "offline",
             }
 
     async def get_frontier_urls(
@@ -448,65 +508,75 @@ class PostgresSearchIndex(AbstractSearchIndex):
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Retrieve recent discovered frontier URLs."""
-        pool = await self.get_pool()
-        query = "SELECT url, domain, source_url, depth, status, discovered_at FROM frontier_urls WHERE 1=1"
-        params: list[Any] = []
-        idx = 1
-        if status:
-            query += f" AND status = ${idx}"
-            params.append(status)
-            idx += 1
-        if domain:
-            query += f" AND domain = ${idx}"
-            params.append(domain)
-            idx += 1
-        query += f" ORDER BY discovered_at DESC LIMIT ${idx}"
-        params.append(limit)
+        try:
+            pool = await self.get_pool()
+            query = (
+                "SELECT url, domain, source_url, depth, status, discovered_at FROM frontier_urls WHERE 1=1"
+            )
+            params: list[Any] = []
+            idx = 1
+            if status:
+                query += f" AND status = ${idx}"
+                params.append(status)
+                idx += 1
+            if domain:
+                query += f" AND domain = ${idx}"
+                params.append(domain)
+                idx += 1
+            query += f" ORDER BY discovered_at DESC LIMIT ${idx}"
+            params.append(limit)
 
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, *params)
-            return [
-                {
-                    "url": r["url"],
-                    "domain": r["domain"],
-                    "source_url": r["source_url"],
-                    "depth": r["depth"],
-                    "status": r["status"],
-                    "discovered_at": r["discovered_at"].isoformat() if r["discovered_at"] else "",
-                }
-                for r in rows
-            ]
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query, *params)
+                return [
+                    {
+                        "url": r["url"],
+                        "domain": r["domain"],
+                        "source_url": r["source_url"],
+                        "depth": r["depth"],
+                        "status": r["status"],
+                        "discovered_at": r["discovered_at"].isoformat() if r["discovered_at"] else "",
+                    }
+                    for r in rows
+                ]
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL get_frontier_urls unavailable: %s", exc)
+            return []
 
     async def get_pending_frontier_urls(
         self, limit: int = 50, max_per_domain: int = 10
     ) -> list[dict[str, Any]]:
         """Retrieve pending frontier URLs partitioned by domain."""
-        pool = await self.get_pool()
-        query = """
-            SELECT url, domain, source_url, depth, status, discovered_at
-            FROM (
-                SELECT url, domain, source_url, depth, status, discovered_at,
-                       ROW_NUMBER() OVER(PARTITION BY domain ORDER BY discovered_at ASC) as rn
-                FROM frontier_urls
-                WHERE status = 'discovered'
-            ) sub
-            WHERE rn <= $1
-            ORDER BY discovered_at ASC
-            LIMIT $2;
-        """
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, max_per_domain, limit)
-            return [
-                {
-                    "url": r["url"],
-                    "domain": r["domain"],
-                    "source_url": r["source_url"],
-                    "depth": r["depth"],
-                    "status": r["status"],
-                    "discovered_at": r["discovered_at"].isoformat() if r["discovered_at"] else "",
-                }
-                for r in rows
-            ]
+        try:
+            pool = await self.get_pool()
+            query = """
+                SELECT url, domain, source_url, depth, status, discovered_at
+                FROM (
+                    SELECT url, domain, source_url, depth, status, discovered_at,
+                           ROW_NUMBER() OVER(PARTITION BY domain ORDER BY discovered_at ASC) as rn
+                    FROM frontier_urls
+                    WHERE status = 'discovered'
+                ) sub
+                WHERE rn <= $1
+                ORDER BY discovered_at ASC
+                LIMIT $2;
+            """
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query, max_per_domain, limit)
+                return [
+                    {
+                        "url": r["url"],
+                        "domain": r["domain"],
+                        "source_url": r["source_url"],
+                        "depth": r["depth"],
+                        "status": r["status"],
+                        "discovered_at": r["discovered_at"].isoformat() if r["discovered_at"] else "",
+                    }
+                    for r in rows
+                ]
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL get_pending_frontier_urls unavailable: %s", exc)
+            return []
 
     async def ping(self) -> bool:
         """Check PostgreSQL connectivity."""

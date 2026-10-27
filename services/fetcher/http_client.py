@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 import httpx
 
 from services.common.config import settings
 from services.common.models import FailedFetchRecord, RawPageRecord
+from services.fetcher.security import is_ssrf_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ class AsyncHttpFetcher:
         max_connections: int | None = None,
         max_keepalive: int | None = None,
         timeout: float | None = None,
+        proxy_url: str | None = None,
     ) -> None:
         self.limits = httpx.Limits(
             max_connections=max_connections or settings.max_connections,
@@ -44,24 +47,28 @@ class AsyncHttpFetcher:
             write=10.0,
             pool=5.0,
         )
+        self.proxy_url = proxy_url or settings.proxy_url
         self._client: httpx.AsyncClient | None = None
 
     async def get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            client_kwargs: dict[str, Any] = {
+                "limits": self.limits,
+                "timeout": self.timeout,
+                "headers": DEFAULT_HEADERS,
+                "follow_redirects": True,
+            }
+            if self.proxy_url:
+                client_kwargs["proxy"] = self.proxy_url
+
             try:
                 self._client = httpx.AsyncClient(
-                    limits=self.limits,
-                    timeout=self.timeout,
-                    headers=DEFAULT_HEADERS,
-                    follow_redirects=True,
+                    **client_kwargs,
                     http2=True,
                 )
             except Exception:
                 self._client = httpx.AsyncClient(
-                    limits=self.limits,
-                    timeout=self.timeout,
-                    headers=DEFAULT_HEADERS,
-                    follow_redirects=True,
+                    **client_kwargs,
                     http2=False,
                 )
         return self._client
@@ -71,6 +78,15 @@ class AsyncHttpFetcher:
 
         Returns either (RawPageRecord, None) or (None, FailedFetchRecord).
         """
+        if settings.enable_ssrf_protection:
+            safe, reason = is_ssrf_safe_url(url)
+            if not safe:
+                return None, FailedFetchRecord(
+                    url=url,
+                    error_type="ssrf_blocked",
+                    error_message=f"SSRF Protection blocked URL: {reason}",
+                )
+
         client = await self.get_client()
         start_time = time.monotonic()
         try:

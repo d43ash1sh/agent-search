@@ -167,10 +167,16 @@ def _serve(args: argparse.Namespace) -> int:
 
 
 def _mcp(args: argparse.Namespace) -> int:
-    database = str(Path(args.database).expanduser())
-    server = AgentSearchMCPServer(database=database)
-    server.run_stdio()
-    return 0
+    try:
+        from services.mcp.server import mcp
+
+        mcp.run()
+        return 0
+    except Exception:
+        database = str(Path(args.database).expanduser())
+        server = AgentSearchMCPServer(database=database)
+        server.run_stdio()
+        return 0
 
 
 def _stats(args: argparse.Namespace) -> int:

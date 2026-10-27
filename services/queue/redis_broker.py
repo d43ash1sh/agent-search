@@ -118,6 +118,32 @@ class RedisQueueBroker(AbstractQueueBroker):
                 "dlq": 0,
             }
 
+    async def clear_queue(self, queue_name: str | None = None) -> dict[str, int]:
+        """Purge items from Redis queue(s) and return counts cleared."""
+        purged: dict[str, int] = {}
+        all_queues = {
+            "fetch": settings.fetch_queue_name,
+            "staging": settings.staging_queue_name,
+            "index": settings.index_queue_name,
+            "dlq": settings.dlq_name,
+        }
+        targets = (
+            {queue_name: all_queues[queue_name]} if queue_name and queue_name in all_queues else all_queues
+        )
+
+        try:
+            client = await self._get_client()
+            for name, key in targets.items():
+                count = await client.llen(key)
+                if count > 0:
+                    await client.delete(key)
+                purged[name] = count
+            logger.info("Purged queues: %s", purged)
+            return purged
+        except Exception as exc:
+            logger.warning("Failed to clear queues: %s", exc)
+            return purged
+
     async def ping(self) -> bool:
         try:
             client = await self._get_client()

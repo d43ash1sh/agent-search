@@ -43,5 +43,24 @@ def simhash_hamming_distance(hash1: int, hash2: int) -> int:
 
     A distance <= 3 indicates near-duplicate or republished content.
     """
-    xor_val = hash1 ^ hash2
+    xor_val = (int(hash1) ^ int(hash2)) & 0xFFFFFFFFFFFFFFFF
     return bin(xor_val).count("1")
+
+
+def to_signed_int64(val: int | None) -> int:
+    """Convert an unsigned 64-bit integer to a signed 64-bit integer (two's complement).
+
+    Guarantees the value fits strictly in PostgreSQL BIGINT (-2^63 to 2^63-1),
+    preventing asyncpg int8_encode OverflowErrors while preserving all 64 bits.
+    """
+    if val is None:
+        return 0
+    v = int(val) & 0xFFFFFFFFFFFFFFFF
+    return v if v < (1 << 63) else v - (1 << 64)
+
+
+def to_unsigned_uint64(val: int | None) -> int:
+    """Convert a signed 64-bit integer (e.g., from PostgreSQL BIGINT) back to unsigned 64-bit."""
+    if val is None:
+        return 0
+    return int(val) & 0xFFFFFFFFFFFFFFFF

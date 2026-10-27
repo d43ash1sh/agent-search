@@ -23,3 +23,8 @@ https://antirez.com/
 https://danluu.com/
 https://martinfowler.com/articles/
 https://eli.thegreenplace.net/
+
+
+#Assmese Wikipedia
+
+https://as.wikipedia.org/

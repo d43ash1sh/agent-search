@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,7 @@ from services.indexer.reranker import NeuralReranker
 from services.queue.base import AbstractQueueBroker
 
 router = APIRouter()
+JOBS_STORE: dict[str, dict[str, Any]] = {}
 
 
 class SearchRequest(BaseModel):
@@ -109,6 +110,40 @@ class ExtractResponse(BaseModel):
     status: str
     items_count: int
     data: list[dict[str, Any]]
+
+
+class ScrapeRequest(BaseModel):
+    url: str
+    render_js: bool = False
+
+
+class ScrapeResponse(BaseModel):
+    status: str
+    url: str
+    title: str = ""
+    markdown: str = ""
+    html: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    passages_count: int = 0
+    error: str | None = None
+
+
+class AsyncCrawlResponse(BaseModel):
+    job_id: str
+    status: str
+    enqueued: int
+    poll_url: str
+
+
+class MapRequest(BaseModel):
+    url: str
+    limit: int = 100
+
+
+class MapResponse(BaseModel):
+    domain: str
+    links_count: int
+    links: list[str]
 
 
 class HealthResponse(BaseModel):
@@ -233,8 +268,74 @@ def create_api_router(
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-    @api.post("/v1/crawl")
-    async def enqueue_crawl(req: EnqueueCrawlRequest) -> dict[str, Any]:
+    @api.post("/v1/scrape", response_model=ScrapeResponse)
+    @api.post("/scrape", response_model=ScrapeResponse)
+    async def scrape_synchronous(req: ScrapeRequest) -> ScrapeResponse:
+        """Synchronous single-page scrape: returns clean markdown, HTML, and metadata."""
+        from services.extractor.chunker import chunk_document
+        from services.extractor.trafilatura_cleaner import TrafilaturaCleaner
+        from services.fetcher.browser_client import PlaywrightBrowserFetcher
+        from services.fetcher.http_client import AsyncHttpFetcher
+        from services.fetcher.security import is_ssrf_safe_url
+
+        safe, reason = is_ssrf_safe_url(req.url)
+        if not safe:
+            return ScrapeResponse(
+                status="blocked",
+                url=req.url,
+                error=f"SSRF Protection blocked URL: {reason}",
+            )
+
+        raw_record = None
+        failed = None
+        if req.render_js:
+            browser_fetcher = PlaywrightBrowserFetcher()
+            raw_record, failed = await browser_fetcher.fetch(req.url)
+        else:
+            http_fetcher = AsyncHttpFetcher()
+            try:
+                raw_record, failed = await http_fetcher.fetch(req.url)
+            finally:
+                await http_fetcher.close()
+
+        if not raw_record:
+            err = failed.error_message if failed else "Fetch failed"
+            return ScrapeResponse(status="error", url=req.url, error=err)
+
+        cleaner = TrafilaturaCleaner()
+        extracted = cleaner.extract(raw_record.raw_html, raw_record.url)
+        if not extracted:
+            return ScrapeResponse(
+                status="ok",
+                url=req.url,
+                html=raw_record.raw_html,
+                error="No text extractable from page",
+            )
+
+        passages = chunk_document(raw_record.canonical_url, extracted["clean_text"])
+        return ScrapeResponse(
+            status="ok",
+            url=raw_record.url,
+            title=extracted["title"],
+            markdown=extracted["markdown"],
+            html=raw_record.raw_html,
+            metadata={
+                "author": extracted.get("author"),
+                "date": extracted.get("published_date"),
+                "sitename": extracted.get("sitename"),
+                "description": extracted.get("description"),
+            },
+            passages_count=len(passages),
+        )
+
+    @api.post("/v1/crawl", response_model=AsyncCrawlResponse)
+    @api.post("/crawl", response_model=AsyncCrawlResponse)
+    async def enqueue_crawl(req: EnqueueCrawlRequest) -> AsyncCrawlResponse:
+        """Async by default crawl endpoint: returns a job ID and enqueues targets."""
+        import time
+        import uuid
+
+        job_id = f"job_{uuid.uuid4().hex[:12]}"
         enqueued = 0
         for url in req.urls:
             url = url.strip()
@@ -244,10 +345,52 @@ def create_api_router(
                         url=url,
                         priority=req.priority,
                         render_js=req.render_js,
+                        metadata={"job_id": job_id},
                     )
                 )
                 enqueued += 1
-        return {"status": "ok", "enqueued": enqueued}
+
+        JOBS_STORE[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "enqueued_urls": enqueued,
+            "render_js": req.render_js,
+            "created_at": time.time(),
+        }
+        return AsyncCrawlResponse(
+            job_id=job_id,
+            status="queued",
+            enqueued=enqueued,
+            poll_url=f"/v1/jobs/{job_id}",
+        )
+
+    @api.get("/v1/jobs/{job_id}")
+    @api.get("/jobs/{job_id}")
+    async def get_job_status(job_id: str) -> dict[str, Any]:
+        """Poll crawl job status and active queue metrics."""
+        job = JOBS_STORE.get(job_id)
+        if not job:
+            return {"job_id": job_id, "status": "not_found", "error": f"Job {job_id} not found"}
+        depths = await broker.get_queue_depths()
+        return {
+            **job,
+            "active_queue_depths": depths,
+        }
+
+    @api.post("/v1/map", response_model=MapResponse)
+    @api.post("/map", response_model=MapResponse)
+    async def map_domain(req: MapRequest) -> MapResponse:
+        """Fast URL discovery: return all mapped and frontier links for a domain."""
+        from urllib.parse import urlsplit
+
+        domain = (urlsplit(req.url).hostname or req.url).lower()
+        items = await index.get_frontier_urls(domain=domain, limit=req.limit)
+        links = [item["url"] for item in items]
+        return MapResponse(
+            domain=domain,
+            links_count=len(links),
+            links=links,
+        )
 
     @api.post("/v1/crawl/site", response_model=RecursiveCrawlResponse)
     async def enqueue_recursive_crawl(req: RecursiveCrawlRequest) -> RecursiveCrawlResponse:
@@ -356,6 +499,11 @@ def create_api_router(
         depths = await broker.get_queue_depths()
         return {"queues": depths}
 
+    @api.post("/v1/queue/clear")
+    async def clear_queue(queue_name: str | None = None) -> dict[str, Any]:
+        purged = await broker.clear_queue(queue_name=queue_name)
+        return {"status": "ok", "message": "Queue purged", "purged": purged}
+
     @api.get("/v1/stats")
     async def get_stats() -> dict[str, Any]:
         return await index.get_stats()
@@ -368,5 +516,22 @@ def create_api_router(
     async def clear_cache() -> dict[str, Any]:
         await url_cache.clear_cache()
         return {"status": "ok", "message": "Crawler URL and page cache cleared"}
+
+    @api.post("/v1/mcp")
+    @api.post("/mcp")
+    async def mcp_jsonrpc_endpoint(request: Request) -> Any:
+        """Standard Model Context Protocol (MCP) JSON-RPC 2.0 endpoint for AI agents over HTTP."""
+        from services.mcp.server import handle_mcp_request
+
+        try:
+            body = await request.json()
+            response = await handle_mcp_request(body)
+            return response or {}
+        except Exception as exc:
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": f"Parse or execution error: {exc}"},
+            }
 
     return api

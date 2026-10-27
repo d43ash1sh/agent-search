@@ -40,6 +40,10 @@ class AbstractQueueBroker(ABC):
     async def get_queue_depths(self) -> dict[str, int]:
         """Return counts of queued items in all stages."""
 
+    async def clear_queue(self, queue_name: str | None = None) -> dict[str, int]:
+        """Clear specified queue (or all queues if None) and return purged counts."""
+        return {}
+
     async def ping(self) -> bool:
         """Check connectivity to broker."""
         return True

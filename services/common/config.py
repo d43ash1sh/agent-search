@@ -26,11 +26,26 @@ class ServiceSettings(BaseModel):
 
     # Fetcher settings
     max_connections: int = Field(default_factory=lambda: int(os.getenv("MAX_CONNECTIONS", "100")))
-    max_keepalive: int = Field(default_factory=lambda: int(os.getenv("MAX_KEEPALIVE", "20")))
+    max_keepalive: int = Field(default_factory=lambda: int(os.getenv("MAX_KEEPALIVE", "50")))
     connect_timeout: float = Field(default_factory=lambda: float(os.getenv("CONNECT_TIMEOUT", "10.0")))
     read_timeout: float = Field(default_factory=lambda: float(os.getenv("READ_TIMEOUT", "15.0")))
+    fetcher_concurrency: int = Field(default_factory=lambda: int(os.getenv("FETCHER_CONCURRENCY", "25")))
+    playwright_workers: int = Field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_WORKERS", "3")))
+    playwright_timeout_ms: int = Field(
+        default_factory=lambda: int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "20000"))
+    )
+    extractor_concurrency: int = Field(default_factory=lambda: int(os.getenv("EXTRACTOR_CONCURRENCY", "5")))
+    indexer_concurrency: int = Field(default_factory=lambda: int(os.getenv("INDEXER_CONCURRENCY", "2")))
     enable_playwright_fallback: bool = Field(
-        default_factory=lambda: os.getenv("ENABLE_PLAYWRIGHT_FALLBACK", "false").lower() in ("true", "1")
+        default_factory=lambda: os.getenv("ENABLE_PLAYWRIGHT_FALLBACK", "true").lower() in ("true", "1")
+    )
+    recycle_browser_after: int = Field(default_factory=lambda: int(os.getenv("RECYCLE_BROWSER_AFTER", "50")))
+    proxy_url: str | None = Field(default_factory=lambda: os.getenv("PROXY_URL") or os.getenv("HTTP_PROXY"))
+    enable_ssrf_protection: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_SSRF_PROTECTION", "true").lower() in ("true", "1")
+    )
+    enable_robots_txt: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_ROBOTS_TXT", "true").lower() in ("true", "1")
     )
 
     # Search / Indexer settings
