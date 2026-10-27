@@ -18,7 +18,7 @@ class SQLitePipeline:
 
     def open_spider(self) -> None:
         Path(self.database).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.database)
+        self.connection = sqlite3.connect(self.database, check_same_thread=False)
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS documents (

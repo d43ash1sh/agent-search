@@ -198,7 +198,7 @@ def _reclean(args: argparse.Namespace) -> int:
         print(f"Database not found: {database_path}", file=sys.stderr)
         return 1
 
-    conn = sqlite3.connect(database_path)
+    conn = sqlite3.connect(database_path, check_same_thread=False)
     try:
         rows = conn.execute("SELECT url, canonical_url, title, text FROM documents").fetchall()
         print(f"Sanitizing {len(rows)} documents in {database_path}...")

@@ -70,7 +70,7 @@ class SearchService:
             parameters.append(before)
         parameters.extend((max(limit * 15, 60),))
 
-        connection = sqlite3.connect(self.database)
+        connection = sqlite3.connect(self.database, check_same_thread=False)
         try:
             rows: list[tuple[int, str, str, str, str, str, str, str, int, int, float]] = connection.execute(
                 f"""
@@ -128,7 +128,7 @@ class SearchService:
         return _select_results(candidates, limit=limit, max_tokens=max_tokens, mode=mode)
 
     def get_evidence(self, evidence_id: str) -> SearchResult | None:
-        connection = sqlite3.connect(self.database)
+        connection = sqlite3.connect(self.database, check_same_thread=False)
         try:
             row: tuple[int, str, str, str, str, str, str, str, int, int] | None = connection.execute(
                 """
@@ -176,7 +176,7 @@ class SearchService:
 
     def get_evidence_context(self, evidence_id: str, window: int = 1) -> dict[str, Any] | None:
         """Retrieve neighboring passages around an evidence passage for expanded verification."""
-        connection = sqlite3.connect(self.database)
+        connection = sqlite3.connect(self.database, check_same_thread=False)
         try:
             target = connection.execute(
                 """
@@ -253,7 +253,7 @@ class SearchService:
 
     def get_document(self, url: str) -> dict[str, Any] | None:
         """Retrieve full document text and all its indexed passages."""
-        connection = sqlite3.connect(self.database)
+        connection = sqlite3.connect(self.database, check_same_thread=False)
         try:
             doc = connection.execute(
                 """
@@ -306,7 +306,7 @@ class SearchService:
         if not db_path.exists():
             return {"exists": False, "database_path": str(db_path)}
 
-        connection = sqlite3.connect(self.database)
+        connection = sqlite3.connect(self.database, check_same_thread=False)
         try:
             doc_count: int = connection.execute("SELECT count(*) FROM documents").fetchone()[0]
             passage_count: int = connection.execute("SELECT count(*) FROM passages").fetchone()[0]
