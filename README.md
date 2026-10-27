@@ -1,11 +1,11 @@
 # Agent Search
 
 [![CI](https://github.com/siddharthaborah/agent-search/actions/workflows/ci.yml/badge.svg)](https://github.com/siddharthaborah/agent-search/actions/workflows/ci.yml)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![PostgreSQL pgvector](https://img.shields.io/badge/PostgreSQL-pgvector-336791.svg)](https://github.com/pgvector/pgvector)
-[![Redis](https://img.shields.io/badge/Redis-7-DC382D.svg)](https://redis.io/)
-[![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33.svg)](https://playwright.dev/)
-[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-purple.svg)](https://modelcontextprotocol.io/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![PostgreSQL pgvector](https://img.shields.io/badge/PostgreSQL-pgvector-336791?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
+[![Redis](https://img.shields.io/badge/Redis-7-222222?logo=redis&logoColor=FF4438)](https://redis.io/)
+[![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/)
+[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-7B1FA2)](https://modelcontextprotocol.io/)
 
 **Agent Search** is an enterprise-grade, high-performance web crawl, extraction, search, and retrieval engine purpose-built for autonomous AI agents, LLM toolchains, and RAG pipelines.
 
