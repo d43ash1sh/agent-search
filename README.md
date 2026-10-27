@@ -14,6 +14,8 @@
 ## Key Highlights
 
 - **Decoupled 25x Concurrency Pipeline**: Asynchronous HTTP/2 fetchers with an isolated 3-worker Playwright Chromium pool providing automated fallback on JavaScript SPAs, 403/401/429/503 access challenges, and SSL negotiation failures.
+- **100% Sovereign Autonomous Search & Link Graph Engine**: Eliminates external commercial search engine reliance (DuckDuckGo/Google/Bing) through open Common Crawl CDX discovery, an autonomous directed link graph, internal PageRank calculation, and recursive outlink harvesting.
+- **Continuous 24/7 Autonomous Crawler Daemon**: Background worker that continuously dequeues prioritized frontier URLs, respects per-domain politeness delays, cleans content, chunks passages, and updates vector indexes in real time.
 - **Autonomous Live Web Metasearch**: Real-time zero-API-key SERP discovery, on-the-fly parallel fetch, real-time vector embeddings, and cross-encoder neural rerank without needing prior crawling.
 - **Multi-Modal Vision & Dynamic Browser Actions**: High-resolution base64 PNG screenshot capture for vision LLMs (Claude 3.5 Sonnet, GPT-4o, Gemini 2.0) with automated action sequences (`click`, `scroll`, `wait`, `wait_for_selector`, `type`).
 - **SSRF & Intranet Defense**: Pre-flight DNS resolution blocking loopback, link-local, RFC1918 subnets, and cloud metadata services (`169.254.169.254`).
@@ -197,6 +199,9 @@ Agent Search provides a native Model Context Protocol (MCP) server allowing dire
 - `get_evidence_context`: Fetches neighboring context passages around any cited passage.
 - `get_document`: Retrieves the full document text by document ID or URL.
 - `fetch_live_page`: Live scrape with Trafilatura cleaning, optional Playwright JS execution, UI action automation, and multimodal base64 screenshot capture.
+- `autonomous_search`: 100% self-hosted search without commercial SERPs, combining local hybrid retrieval, PageRank domain authority multipliers, cross-encoder reranking, and open discovery.
+- `query_common_crawl`: Discovers open web URLs from the petabyte-scale Common Crawl CDX index.
+- `get_autonomous_crawler_status`: Reports live telemetry and metrics of the autonomous 24/7 web crawler daemon.
 - `enqueue_crawl_url`: Queues URLs into the distributed crawler frontier.
 - `crawl_frontier_batch`: Executes a batch crawl from the pending URL queue.
 - `get_search_stats`: Reports index size, vector counts, cache hit rates, and worker statuses.
@@ -224,7 +229,7 @@ Or connect via the MCP HTTP endpoint at `http://localhost:8000/mcp`.
 The codebase includes an extensive automated test suite covering unit, integration, and security layers:
 
 ```sh
-# Run full pytest suite (85 tests)
+# Run full pytest suite (94 tests)
 pytest
 
 # Ruff linting check

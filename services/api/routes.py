@@ -13,9 +13,12 @@ from services.api.dashboard import DASHBOARD_HTML
 from services.cache.redis_cache import AbstractUrlCache, get_url_cache
 from services.common.citations import CitationFormatter
 from services.common.models import FetchRequest, SearchHit
+from services.discovery.common_crawl import CommonCrawlClient, CommonCrawlRecord
+from services.frontier.crawler_daemon import AutonomousCrawlerDaemon, CrawlerStats
 from services.indexer.base import AbstractSearchIndex
 from services.indexer.reranker import NeuralReranker
 from services.queue.base import AbstractQueueBroker
+from services.search.autonomous_engine import AutonomousSearchEngine, AutonomousSearchResponse
 from services.search.live_engine import LiveSearchEngine, LiveSearchResponse
 
 router = APIRouter()
@@ -39,6 +42,18 @@ class LiveSearchRequest(BaseModel):
     hybrid: bool = True
     rerank: bool = True
     live_crawl: bool = True
+
+
+class AutonomousSearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+    tokens: int = 1500
+    allow_discovery: bool = True
+
+
+class CommonCrawlDiscoveryRequest(BaseModel):
+    pattern: str
+    limit: int = 20
 
 
 class SearchResponse(BaseModel):
@@ -176,6 +191,9 @@ def create_api_router(
     reranker = NeuralReranker()
     url_cache = cache or get_url_cache()
     live_engine = LiveSearchEngine(index=index, reranker=reranker)
+    autonomous_engine = AutonomousSearchEngine(index=index, reranker=reranker)
+    crawler_daemon = AutonomousCrawlerDaemon(index=index)
+    common_crawl_client = CommonCrawlClient()
 
     @api.get("/", response_class=HTMLResponse)
     @api.get("/dashboard", response_class=HTMLResponse)
@@ -254,6 +272,41 @@ def create_api_router(
             hybrid=req.hybrid,
             rerank=req.rerank,
             live_crawl=req.live_crawl,
+        )
+
+    @api.post("/v1/search/autonomous", response_model=AutonomousSearchResponse)
+    async def search_autonomous(req: AutonomousSearchRequest) -> AutonomousSearchResponse:
+        """100% self-hosted search: hybrid retrieval, PageRank domain boost, cross-encoder reranking, and open discovery."""
+        return await autonomous_engine.search(
+            query=req.query,
+            limit=req.limit,
+            max_tokens=req.tokens,
+            allow_autonomous_discovery=req.allow_discovery,
+        )
+
+    @api.post("/v1/crawler/daemon/start")
+    async def start_crawler_daemon() -> dict[str, Any]:
+        """Start the background autonomous 24/7 web crawler daemon."""
+        crawler_daemon.start()
+        return {"status": "ok", "message": "Autonomous crawler daemon started"}
+
+    @api.post("/v1/crawler/daemon/stop")
+    async def stop_crawler_daemon() -> dict[str, Any]:
+        """Stop the background autonomous crawler daemon."""
+        await crawler_daemon.stop()
+        return {"status": "ok", "message": "Autonomous crawler daemon stopped"}
+
+    @api.get("/v1/crawler/daemon/status", response_model=CrawlerStats)
+    async def get_crawler_daemon_status() -> CrawlerStats:
+        """Get live telemetry of the background crawler daemon."""
+        return crawler_daemon.get_stats()
+
+    @api.post("/v1/discovery/common-crawl")
+    async def discover_common_crawl(req: CommonCrawlDiscoveryRequest) -> list[CommonCrawlRecord]:
+        """Directly query the open Common Crawl CDX index for URLs matching domain or wildcard pattern."""
+        return await common_crawl_client.discover_urls(
+            domain_or_pattern=req.pattern,
+            limit=req.limit,
         )
 
     @api.post("/v1/search/grounded", response_model=GroundedSearchResponse)

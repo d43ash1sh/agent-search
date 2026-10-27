@@ -59,6 +59,18 @@ class AbstractSearchIndex(ABC):
         """Retrieve pending discovered URLs partitioned by domain."""
         return []
 
+    async def record_link_edges(self, edges: list[dict[str, Any]]) -> int:
+        """Record directed link graph edges for PageRank calculation."""
+        return 0
+
+    async def get_domain_authority(self, domain: str) -> float:
+        """Get PageRank authority score for a domain (default 1.0)."""
+        return 1.0
+
+    async def update_domain_authorities(self, authorities: dict[str, float]) -> None:
+        """Persist calculated PageRank authority scores."""
+        return None
+
     async def ping(self) -> bool:
         """Check connectivity to storage backend."""
         return True

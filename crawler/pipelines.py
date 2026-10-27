@@ -174,6 +174,38 @@ class SQLitePipeline:
         )
         self.connection.execute("CREATE INDEX IF NOT EXISTS idx_frontier_domain ON frontier_urls(domain)")
         self.connection.execute("CREATE INDEX IF NOT EXISTS idx_frontier_status ON frontier_urls(status)")
+
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS link_graph_edges (
+                source_url TEXT NOT NULL,
+                target_url TEXT NOT NULL,
+                source_domain TEXT NOT NULL,
+                target_domain TEXT NOT NULL,
+                is_internal INTEGER NOT NULL DEFAULT 0,
+                discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source_url, target_url)
+            )
+            """
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_link_target_domain ON link_graph_edges(target_domain)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_link_source_domain ON link_graph_edges(source_domain)"
+        )
+
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS domain_authority (
+                domain TEXT PRIMARY KEY,
+                pagerank_score REAL NOT NULL DEFAULT 1.0,
+                inlink_count INTEGER NOT NULL DEFAULT 0,
+                outlink_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         self.connection.commit()
 
     def process_item(self, item: DocumentItem) -> DocumentItem:
@@ -351,6 +383,54 @@ class SQLitePipeline:
             }
             for r in rows
         ]
+
+    def record_link_edges(self, records: list[dict[str, Any]]) -> int:
+        if self.connection is None or not records:
+            return 0
+        inserted = 0
+        for r in records:
+            src = r["source_url"]
+            tgt = r["target_url"]
+            src_dom = r.get("source_domain") or (urlsplit(src).hostname or "").lower()
+            tgt_dom = r.get("target_domain") or (urlsplit(tgt).hostname or "").lower()
+            is_internal = 1 if r.get("is_internal") else 0
+            res = self.connection.execute(
+                """
+                INSERT OR IGNORE INTO link_graph_edges(
+                    source_url, target_url, source_domain, target_domain, is_internal, discovered_at
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (src, tgt, src_dom, tgt_dom, is_internal),
+            )
+            inserted += res.rowcount
+        self.connection.commit()
+        return inserted
+
+    def get_domain_authority(self, domain: str) -> float:
+        if self.connection is None:
+            return 1.0
+        cur = self.connection.cursor()
+        row = cur.execute(
+            "SELECT pagerank_score FROM domain_authority WHERE domain = ?",
+            (domain.lower().strip(),),
+        ).fetchone()
+        return float(row[0]) if row is not None else 1.0
+
+    def update_domain_authorities(self, authorities: dict[str, float]) -> None:
+        if self.connection is None or not authorities:
+            return
+        for domain, score in authorities.items():
+            self.connection.execute(
+                """
+                INSERT INTO domain_authority(domain, pagerank_score, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(domain) DO UPDATE SET
+                    pagerank_score = excluded.pagerank_score,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (domain.lower().strip(), float(score)),
+            )
+        self.connection.commit()
 
     def close_spider(self) -> None:
         if self.connection is not None:

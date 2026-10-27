@@ -152,6 +152,26 @@ class PostgresSearchIndex(AbstractSearchIndex):
                 );
                 CREATE INDEX IF NOT EXISTS idx_frontier_domain ON frontier_urls(domain);
                 CREATE INDEX IF NOT EXISTS idx_frontier_status ON frontier_urls(status);
+
+                CREATE TABLE IF NOT EXISTS link_graph_edges (
+                    source_url TEXT NOT NULL,
+                    target_url TEXT NOT NULL,
+                    source_domain TEXT NOT NULL,
+                    target_domain TEXT NOT NULL,
+                    is_internal BOOLEAN NOT NULL DEFAULT FALSE,
+                    discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (source_url, target_url)
+                );
+                CREATE INDEX IF NOT EXISTS idx_link_target_domain ON link_graph_edges(target_domain);
+                CREATE INDEX IF NOT EXISTS idx_link_source_domain ON link_graph_edges(source_domain);
+
+                CREATE TABLE IF NOT EXISTS domain_authority (
+                    domain TEXT PRIMARY KEY,
+                    pagerank_score DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                    inlink_count INTEGER NOT NULL DEFAULT 0,
+                    outlink_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
                 """
             )
 
@@ -592,6 +612,73 @@ class PostgresSearchIndex(AbstractSearchIndex):
         except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
             logger.warning("PostgreSQL get_pending_frontier_urls unavailable: %s", exc)
             return []
+
+    async def record_link_edges(self, edges: list[dict[str, Any]]) -> int:
+        """Persist directed link graph edges."""
+        if not edges:
+            return 0
+        pool = await self.get_pool()
+        try:
+            async with pool.acquire() as conn:
+                records = [
+                    (
+                        e["source_url"],
+                        e["target_url"],
+                        e.get("source_domain") or (urlsplit(e["source_url"]).hostname or "").lower(),
+                        e.get("target_domain") or (urlsplit(e["target_url"]).hostname or "").lower(),
+                        bool(e.get("is_internal", False)),
+                    )
+                    for e in edges
+                ]
+                await conn.executemany(
+                    """
+                    INSERT INTO link_graph_edges (source_url, target_url, source_domain, target_domain, is_internal)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (source_url, target_url) DO NOTHING
+                    """,
+                    records,
+                )
+                return len(records)
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL record_link_edges unavailable: %s", exc)
+            return 0
+
+    async def get_domain_authority(self, domain: str) -> float:
+        """Retrieve cached PageRank authority multiplier for a domain."""
+        clean_domain = domain.lower().strip()
+        if not clean_domain:
+            return 1.0
+        pool = await self.get_pool()
+        try:
+            async with pool.acquire() as conn:
+                score = await conn.fetchval(
+                    "SELECT pagerank_score FROM domain_authority WHERE domain = $1", clean_domain
+                )
+                return float(score) if score is not None else 1.0
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.debug("PostgreSQL get_domain_authority note: %s", exc)
+            return 1.0
+
+    async def update_domain_authorities(self, authorities: dict[str, float]) -> None:
+        """Update or insert PageRank scores into the domain authority table."""
+        if not authorities:
+            return
+        pool = await self.get_pool()
+        try:
+            async with pool.acquire() as conn:
+                records = [(domain.lower(), float(score)) for domain, score in authorities.items()]
+                await conn.executemany(
+                    """
+                    INSERT INTO domain_authority (domain, pagerank_score, updated_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (domain) DO UPDATE SET
+                        pagerank_score = EXCLUDED.pagerank_score,
+                        updated_at = NOW()
+                    """,
+                    records,
+                )
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            logger.warning("PostgreSQL update_domain_authorities unavailable: %s", exc)
 
     async def ping(self) -> bool:
         """Check PostgreSQL connectivity."""

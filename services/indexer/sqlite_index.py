@@ -148,6 +148,15 @@ class SQLiteSearchIndex(AbstractSearchIndex):
     ) -> list[dict[str, Any]]:
         return self._pipeline.get_pending_frontier_urls(limit=limit, max_per_domain=max_per_domain)
 
+    async def record_link_edges(self, edges: list[dict[str, Any]]) -> int:
+        return self._pipeline.record_link_edges(edges)
+
+    async def get_domain_authority(self, domain: str) -> float:
+        return self._pipeline.get_domain_authority(domain)
+
+    async def update_domain_authorities(self, authorities: dict[str, float]) -> None:
+        self._pipeline.update_domain_authorities(authorities)
+
     async def ping(self) -> bool:
         """Check SQLite connectivity."""
         try:

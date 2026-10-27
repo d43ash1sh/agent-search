@@ -302,6 +302,69 @@ async def live_web_search(
 
 
 @mcp.tool(
+    name="autonomous_search",
+    description=(
+        "100% self-hosted autonomous search without external commercial SERPs: "
+        "retrieves from local hybrid vector index (pgvector), applies internal PageRank "
+        "domain authority boost, runs neural cross-encoder reranking, and triggers "
+        "open discovery (Common Crawl / Wikipedia) if index is cold."
+    ),
+    annotations=ToolAnnotations(read_only_hint=False),
+)
+async def autonomous_search(
+    query: str,
+    limit: int = 5,
+    max_tokens: int = 1500,
+    allow_discovery: bool = True,
+) -> str:
+    """Execute 100% self-contained search without external commercial search APIs."""
+    from services.search.autonomous_engine import AutonomousSearchEngine
+
+    index = get_search_index()
+    reranker = get_reranker()
+    engine = AutonomousSearchEngine(index=index, reranker=reranker)
+    res = await engine.search(
+        query=query,
+        limit=limit,
+        max_tokens=max_tokens,
+        allow_autonomous_discovery=allow_discovery,
+    )
+    return json.dumps(res.model_dump(), indent=2)
+
+
+@mcp.tool(
+    name="query_common_crawl",
+    description=(
+        "Query the open Common Crawl CDX index to discover billions of live URLs "
+        "matching domain or wildcard pattern (e.g. '*.gov.in/*', 'wikipedia.org/*')."
+    ),
+    annotations=ToolAnnotations(read_only_hint=True),
+)
+async def query_common_crawl(pattern: str, limit: int = 20) -> str:
+    """Discover URLs from the open Common Crawl index."""
+    from services.discovery.common_crawl import CommonCrawlClient
+
+    client = CommonCrawlClient()
+    records = await client.discover_urls(pattern, limit=limit)
+    return json.dumps([r.model_dump() for r in records], indent=2)
+
+
+@mcp.tool(
+    name="get_autonomous_crawler_status",
+    description="Inspect telemetry and metrics of the autonomous 24/7 web crawler daemon.",
+    annotations=ToolAnnotations(read_only_hint=True),
+)
+async def get_autonomous_crawler_status() -> str:
+    """Inspect telemetry and metrics of the autonomous crawler daemon."""
+    from services.frontier.crawler_daemon import AutonomousCrawlerDaemon
+
+    index = get_search_index()
+    daemon = AutonomousCrawlerDaemon(index=index)
+    stats = daemon.get_stats()
+    return json.dumps(stats.model_dump(), indent=2)
+
+
+@mcp.tool(
     name="enqueue_crawl_url",
     description=(
         "Enqueue a URL to the distributed crawler fetch queue for asynchronous fetching, "
