@@ -270,9 +270,10 @@ async def fetch_live_page(
 @mcp.tool(
     name="live_web_search",
     description=(
-        "Autonomous live web metasearch: searches the live web in real time via DuckDuckGo SERP, "
-        "crawls and cleans top source pages on the fly, computes dense vector embeddings, "
-        "indexes them into the database, and returns neural-reranked cited evidence passages."
+        "Autonomous real-time web search and live indexing: federates across Bing, Brave, "
+        "DuckDuckGo, and SearXNG; fetches and cleans top source pages on the fly; extracts "
+        "directed link graph edges; computes FastEmbed vectors; indexes passages into pgvector/SQLite; "
+        "and returns neural-reranked cited evidence passages."
     ),
     annotations=ToolAnnotations(read_only_hint=False),
 )
@@ -283,7 +284,7 @@ async def live_web_search(
     hybrid: bool = True,
     live_crawl: bool = True,
 ) -> str:
-    """Execute live internet metasearch with on-the-fly crawling and neural reranking."""
+    """Execute live internet federated search with real-time crawling, vector indexing, and neural reranking."""
     from services.search.live_engine import LiveSearchEngine
 
     index = get_search_index()

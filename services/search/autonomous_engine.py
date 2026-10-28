@@ -20,7 +20,7 @@ from services.fetcher.http_client import AsyncHttpFetcher
 from services.indexer.base import AbstractSearchIndex
 from services.indexer.reranker import NeuralReranker
 from services.search.decomposer import QueryDecomposer, QueryDecomposition
-from services.search.serp_client import DuckDuckGoSerpClient
+from services.search.serp_client import FederatedSerpClient
 from services.search.synthesizer import EvidenceSynthesisResult, EvidenceSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ class AutonomousSearchEngine:
         self.open_discovery = OpenKnowledgeDiscovery()
         self.common_crawl = CommonCrawlClient()
         self.news_discovery = OpenNewsDiscovery()
-        self.serp_client = DuckDuckGoSerpClient()
+        self.serp_client = FederatedSerpClient()
 
     async def _fetch_and_index_urls(self, urls: list[str]) -> list[str]:
         """Fetch and index a list of open discovery URLs into the local search store."""

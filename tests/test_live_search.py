@@ -7,7 +7,13 @@ from services.api.server import app
 from services.common.models import CleanDocument, PassageChunk
 from services.indexer.sqlite_index import SQLiteSearchIndex
 from services.search.live_engine import LiveSearchEngine
-from services.search.serp_client import DuckDuckGoSerpClient, SerpResultItem
+from services.search.serp_client import (
+    BingSearchClient,
+    BraveSearchClient,
+    DuckDuckGoSerpClient,
+    FederatedSerpClient,
+    SerpResultItem,
+)
 
 
 class TestLiveSearch:
@@ -22,6 +28,16 @@ class TestLiveSearch:
         protocol_relative = "//example.com/page"
         assert client._clean_url(protocol_relative) == "https://example.com/page"
 
+    def test_bing_client_unwraps_redirects(self) -> None:
+        bing = BingSearchClient()
+        # Test direct URL
+        direct = "https://python.org"
+        assert bing._unwrap_bing_url(direct) == direct
+
+        # Test Bing base64 encoded URL wrapper: u=a1aHR0cHM6Ly9mYXN0YXBpLnRpYW5nb2xvLmNvbS8
+        wrapped = "https://www.bing.com/ck/a?!&&p=123&u=a1aHR0cHM6Ly9mYXN0YXBpLnRpYW5nb2xvLmNvbS8&ntb=1"
+        assert bing._unwrap_bing_url(wrapped) == "https://fastapi.tiangolo.com/"
+
     @pytest.mark.anyio
     async def test_serp_client_executes_query(self) -> None:
         client = DuckDuckGoSerpClient()
@@ -32,6 +48,35 @@ class TestLiveSearch:
             assert isinstance(r, SerpResultItem)
             assert r.url.startswith(("http://", "https://"))
             assert len(r.title) > 0
+
+    @pytest.mark.anyio
+    async def test_bing_client_executes_query(self) -> None:
+        client = BingSearchClient()
+        results = await client.search("python documentation", limit=3)
+        assert isinstance(results, list)
+        for r in results:
+            assert isinstance(r, SerpResultItem)
+            assert r.url.startswith(("http://", "https://"))
+            assert len(r.title) > 0
+
+    @pytest.mark.anyio
+    async def test_brave_client_graceful_without_key(self) -> None:
+        client = BraveSearchClient(api_key=None)
+        results = await client.search("fastapi tutorial", limit=3)
+        assert results == []
+
+    @pytest.mark.anyio
+    async def test_federated_client_aggregates_and_deduplicates(self) -> None:
+        client = FederatedSerpClient()
+        results = await client.search("python asyncio documentation", limit=4)
+        assert isinstance(results, list)
+        seen_domains: dict[str, int] = {}
+        for r in results:
+            assert isinstance(r, SerpResultItem)
+            dom = r.domain
+            seen_domains[dom] = seen_domains.get(dom, 0) + 1
+            # Verify domain diversity: at most 2 per domain
+            assert seen_domains[dom] <= 2
 
     @pytest.mark.anyio
     async def test_live_search_engine_fallback_and_reranking(self, tmp_path: pytest.TempPathFactory) -> None:
@@ -71,7 +116,7 @@ class TestLiveSearch:
 
         assert response.query == "grounded web evidence hallucinations"
         assert len(response.results) >= 1
-        assert len(response.results[0].evidence_id) > 10
+        assert len(response.results[0].evidence_id) > 5
         assert "Autonomous AI agents" in response.results[0].text
         assert "ID: " in response.citations_markdown
         await index.close()

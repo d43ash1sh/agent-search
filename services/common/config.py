@@ -66,5 +66,14 @@ class ServiceSettings(BaseModel):
     api_host: str = Field(default_factory=lambda: os.getenv("API_HOST", "0.0.0.0"))
     api_port: int = Field(default_factory=lambda: int(os.getenv("API_PORT", "8000")))
 
+    # Real-time Web Search & Federated Indexer settings
+    brave_api_key: str | None = Field(default_factory=lambda: os.getenv("BRAVE_API_KEY"))
+    bing_api_key: str | None = Field(default_factory=lambda: os.getenv("BING_API_KEY"))
+    searxng_url: str | None = Field(default_factory=lambda: os.getenv("SEARXNG_URL"))
+    live_search_concurrency: int = Field(
+        default_factory=lambda: int(os.getenv("LIVE_SEARCH_CONCURRENCY", "5"))
+    )
+    live_fetch_timeout: float = Field(default_factory=lambda: float(os.getenv("LIVE_FETCH_TIMEOUT", "8.0")))
+
 
 settings = ServiceSettings()

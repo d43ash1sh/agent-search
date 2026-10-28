@@ -187,7 +187,20 @@ Each result contains:
 - `citation`: Exact string start and end offsets (`start_offset`, `end_offset`) into the parent document.
 - `estimated_tokens`: Token budget estimation.
 
-### 7. Evidence-Based Answer Engine (`POST /v1/search/evidence`)
+### 7. Real-Time Federated Search & Live Indexing (`POST /v1/search/live`)
+Enterprise multi-engine live search federating across **Bing**, **Brave Search**, **DuckDuckGo**, and **SearXNG**. Crawls top source pages in parallel, extracts clean text with Trafilatura, computes 64-bit SimHash, indexes FastEmbed vectors into PostgreSQL/SQLite, updates the directed link graph, and returns neural-reranked cited passages:
+
+```sh
+curl -X POST http://localhost:8000/v1/search/live -H "Content-Type: application/json" -d "{\"query\": \"ড° ভূপেন হাজৰিকা\", \"limit\": 5, \"live_crawl\": true}"
+```
+
+Optional query fields:
+- `engines`: Specify custom search backends e.g. `["bing", "brave", "duckduckgo"]` or leave empty to query all available engines.
+- `Brave Search API`: Set `BRAVE_API_KEY` for official Brave Web Search.
+- `Bing Search API`: Set `BING_API_KEY` for official Bing Search (or uses zero-credential open Bing parsing with base64 unwrapping).
+- `SearXNG`: Set `SEARXNG_URL` for self-hosted or private SearXNG instances.
+
+### 8. Evidence-Based Answer Engine (`POST /v1/search/evidence`)
 Perplexity/Consensus-grade answer engine executing multi-angle query decomposition, domain authority tiering, cross-document consensus analysis, and fine-grained claim attribution with confidence ratings (`HIGH_CONSENSUS`, `MODERATE_EVIDENCE`, `CONTESTED`):
 
 ```sh

@@ -42,6 +42,7 @@ class LiveSearchRequest(BaseModel):
     hybrid: bool = True
     rerank: bool = True
     live_crawl: bool = True
+    engines: list[str] = Field(default_factory=list)
 
 
 class AutonomousSearchRequest(BaseModel):
@@ -273,7 +274,7 @@ def create_api_router(
 
     @api.post("/v1/search/live", response_model=LiveSearchResponse)
     async def search_live(req: LiveSearchRequest) -> LiveSearchResponse:
-        """Autonomous metasearch: queries SERP, crawls unindexed pages, indexes pgvector, and reranks."""
+        """Autonomous metasearch: queries federated SERP (Brave, Bing, DuckDuckGo), crawls unindexed pages, indexes pgvector, and reranks."""
         return await live_engine.search(
             query=req.query,
             limit=req.limit,
@@ -281,6 +282,7 @@ def create_api_router(
             hybrid=req.hybrid,
             rerank=req.rerank,
             live_crawl=req.live_crawl,
+            engines=req.engines or None,
         )
 
     @api.post("/v1/search/autonomous", response_model=AutonomousSearchResponse)

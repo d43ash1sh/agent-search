@@ -3,7 +3,14 @@
 from services.search.autonomous_engine import AutonomousSearchEngine, AutonomousSearchResponse
 from services.search.decomposer import QueryDecomposer, QueryDecomposition, QueryIntent, SubQuery
 from services.search.live_engine import LiveSearchEngine, LiveSearchResponse
-from services.search.serp_client import DuckDuckGoSerpClient
+from services.search.serp_client import (
+    BingSearchClient,
+    BraveSearchClient,
+    DuckDuckGoSerpClient,
+    FederatedSerpClient,
+    SearXNGSearchClient,
+    SerpResultItem,
+)
 from services.search.synthesizer import (
     ConsensusLevel,
     EvidenceClaim,
@@ -15,16 +22,21 @@ from services.search.synthesizer import (
 __all__ = [
     "AutonomousSearchEngine",
     "AutonomousSearchResponse",
+    "BingSearchClient",
+    "BraveSearchClient",
     "ConsensusLevel",
     "DuckDuckGoSerpClient",
     "EvidenceClaim",
     "EvidenceSource",
     "EvidenceSynthesisResult",
     "EvidenceSynthesizer",
+    "FederatedSerpClient",
     "LiveSearchEngine",
     "LiveSearchResponse",
     "QueryDecomposer",
     "QueryDecomposition",
     "QueryIntent",
+    "SearXNGSearchClient",
+    "SerpResultItem",
     "SubQuery",
 ]
