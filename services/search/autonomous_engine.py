@@ -20,7 +20,6 @@ from services.fetcher.http_client import AsyncHttpFetcher
 from services.indexer.base import AbstractSearchIndex
 from services.indexer.reranker import NeuralReranker
 from services.search.decomposer import QueryDecomposer, QueryDecomposition
-from services.search.serp_client import FederatedSerpClient
 from services.search.synthesizer import EvidenceSynthesisResult, EvidenceSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -63,7 +62,6 @@ class AutonomousSearchEngine:
         self.open_discovery = OpenKnowledgeDiscovery()
         self.common_crawl = CommonCrawlClient()
         self.news_discovery = OpenNewsDiscovery()
-        self.serp_client = FederatedSerpClient()
 
     async def _fetch_and_index_urls(self, urls: list[str]) -> list[str]:
         """Fetch and index a list of open discovery URLs into the local search store."""
@@ -180,17 +178,7 @@ class AutonomousSearchEngine:
             candidate_urls: list[str] = []
             seen_discovery_domains: set[str] = set()
 
-            # A. Broad SERP discovery (captures news dailies, blogs, official portals)
-            try:
-                serp_results = await self.serp_client.search(clean_query, limit=5)
-                for item in serp_results:
-                    if item.domain and item.domain not in seen_discovery_domains:
-                        seen_discovery_domains.add(item.domain)
-                        candidate_urls.append(item.url)
-            except Exception as exc:
-                logger.debug("SERP discovery note: %s", exc)
-
-            # B. Open News RSS discovery (captures live regional & national reporting)
+            # A. Open News RSS discovery (captures live regional & national reporting)
             try:
                 news_items = await self.news_discovery.search_news(clean_query, limit=5)
                 for n_item in news_items:
@@ -200,7 +188,7 @@ class AutonomousSearchEngine:
             except Exception as exc:
                 logger.debug("News discovery note: %s", exc)
 
-            # C. Open Knowledge / Wikimedia discovery (captures encyclopedic entries)
+            # B. Open Knowledge / Wikimedia discovery (captures encyclopedic entries)
             try:
                 open_results = await self.open_discovery.search(clean_query, limit=3)
                 for k_item in open_results:
@@ -210,9 +198,9 @@ class AutonomousSearchEngine:
             except Exception as exc:
                 logger.debug("Knowledge discovery note: %s", exc)
 
-            # D. Common Crawl open index fallback
+            # C. Common Crawl open index fallback (queries billions of open web pages)
             if not candidate_urls:
-                cc_records = await self.common_crawl.discover_urls(f"*{clean_query}*", limit=3)
+                cc_records = await self.common_crawl.discover_urls(f"*{clean_query}*", limit=5)
                 candidate_urls = [r.url for r in cc_records]
 
             if candidate_urls:
